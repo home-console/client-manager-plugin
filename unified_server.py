@@ -4,8 +4,12 @@
 """
 
 import asyncio
+import base64
+import hashlib
+import hmac as hmac_module
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Dict, Set, Optional, Any
@@ -16,6 +20,9 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,6 +36,40 @@ connected_clients: Dict[str, WebSocket] = {}
 client_info: Dict[str, dict] = {}
 command_history: list = []
 command_results: Dict[str, dict] = {}
+
+# E2E шифрование (PSK режим)
+ENCRYPTION_KEY = os.getenv("SERVER_ENCRYPTION_KEY", "my-super-secret-encryption-key-2025")
+SALT = b"remote-client-salt"
+
+def derive_key(password: str, salt: bytes) -> bytes:
+    """Деривация ключа через PBKDF2"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=4096
+    )
+    return kdf.derive(password.encode())
+
+def encrypt_aes_gcm(key: bytes, plaintext: bytes) -> bytes:
+    """AES-GCM шифрование"""
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+    return nonce + ciphertext
+
+def decrypt_aes_gcm(key: bytes, data: bytes) -> bytes:
+    """AES-GCM дешифрование"""
+    if len(data) < 12:
+        raise ValueError("invalid ciphertext length")
+    nonce = data[:12]
+    ciphertext = data[12:]
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ciphertext, None)
+
+def compute_hmac(key: bytes, data: bytes) -> bytes:
+    """HMAC-SHA256"""
+    return hmac_module.new(key, data, hashlib.sha256).digest()
 
 class CommandRequest(BaseModel):
     # Простой режим: плоская строка команды
@@ -62,6 +103,14 @@ class UnifiedServer:
         self.client_info = client_info
         self.command_history = command_history
         self.command_results = command_results
+        # Буферы для сборки чанков: command_id -> {chunks: {idx: str}, total: int, received: int}
+        self._chunk_buffers: Dict[str, dict] = {}
+        # E2E состояние: client_id -> {key, seq_out, seq_in}
+        self._encryption_state: Dict[str, dict] = {}
+        if ENCRYPTION_KEY:
+            self._encryption_key = derive_key(ENCRYPTION_KEY, SALT)
+        else:
+            self._encryption_key = None
     
     async def register_client(self, websocket: WebSocket, client_data: dict) -> str:
         """Регистрация нового клиента"""
@@ -88,7 +137,70 @@ class UnifiedServer:
         
         logger.info(f"✅ Клиент зарегистрирован: {client_id} ({hostname})")
         logger.info(f"📊 Всего клиентов: {len(self.clients)}")
+        # Инициализация E2E состояния
+        if self._encryption_key:
+            self._encryption_state[client_id] = {"seq_out": 0, "seq_in": 0}
         return client_id
+    
+    async def unwrap_message(self, data: str, client_id: str) -> dict:
+        """Распаковка зашифрованного сообщения"""
+        if not self._encryption_key:
+            return json.loads(data)
+        try:
+            wrapper = json.loads(data)
+            if "payload" not in wrapper or "hmac" not in wrapper:
+                # Нешифрованное — разрешаем до регистрации
+                return wrapper
+            # Инициализируем состояние если еще нет
+            if client_id not in self._encryption_state:
+                self._encryption_state[client_id] = {"seq_out": 0, "seq_in": 0}
+            payload_b64 = wrapper["payload"]
+            hmac_b64 = wrapper["hmac"]
+            payload_enc = base64.b64decode(payload_b64)
+            hmac_recv = base64.b64decode(hmac_b64)
+            # Проверка HMAC
+            hmac_calc = compute_hmac(self._encryption_key, payload_enc)
+            if not hmac_module.compare_digest(hmac_calc, hmac_recv):
+                raise ValueError("HMAC mismatch")
+            # Дешифровка
+            plaintext = decrypt_aes_gcm(self._encryption_key, payload_enc)
+            msg = json.loads(plaintext.decode("utf-8"))
+            # Проверка seq (только для зарегистрированных клиентов)
+            if "_seq" in msg.get("data", {}) and client_id != "unknown":
+                seq = int(msg["data"]["_seq"])
+                state = self._encryption_state.get(client_id, {})
+                if seq <= state.get("seq_in", 0):
+                    raise ValueError("Replay detected")
+                state["seq_in"] = seq
+                del msg["data"]["_seq"]
+            elif "_seq" in msg.get("data", {}):
+                # Для unknown просто удаляем _seq
+                del msg["data"]["_seq"]
+            return msg
+        except Exception as e:
+            logger.warning(f"Unwrap failed: {e}, treating as plaintext")
+            return json.loads(data)
+    
+    async def wrap_message(self, msg: dict, client_id: str) -> str:
+        """Упаковка сообщения в шифрованную обёртку"""
+        if not self._encryption_key:
+            return json.dumps(msg)
+        # Инициализируем состояние если еще нет
+        if client_id not in self._encryption_state:
+            self._encryption_state[client_id] = {"seq_out": 0, "seq_in": 0}
+        state = self._encryption_state[client_id]
+        state["seq_out"] = state.get("seq_out", 0) + 1
+        if "data" not in msg or msg["data"] is None:
+            msg["data"] = {}
+        msg["data"]["_seq"] = state["seq_out"]
+        plaintext = json.dumps(msg).encode("utf-8")
+        payload_enc = encrypt_aes_gcm(self._encryption_key, plaintext)
+        hmac_val = compute_hmac(self._encryption_key, payload_enc)
+        wrapper = {
+            "payload": base64.b64encode(payload_enc).decode(),
+            "hmac": base64.b64encode(hmac_val).decode()
+        }
+        return json.dumps(wrapper)
     
     async def unregister_client(self, client_id: str):
         """Отключение клиента"""
@@ -105,14 +217,22 @@ class UnifiedServer:
         # Нормализуем данные сообщения
         payload = message.get('data') if isinstance(message.get('data'), dict) else message
         
-        if msg_type == 'register':
+        if msg_type == 'key_exchange':
+            # PSK режим: игнорируем key_exchange, клиент уйдёт в fallback
+            logger.info(f"key_exchange получен, PSK режим — игнорируем")
+            return
+        
+        elif msg_type == 'register':
             # Клиент уже зарегистрирован, отправляем подтверждение
             response = {
                 "type": "registration_success",
                 "client_id": client_id,
                 "message": "Клиент успешно зарегистрирован"
             }
-            await websocket.send_text(json.dumps(response))
+            wrapped = await self.wrap_message(response, client_id)
+            logger.info(f"📤 Отправка registration_success клиенту {client_id}, длина: {len(wrapped)}")
+            await websocket.send_text(wrapped)
+            logger.info(f"✅ Ответ отправлен")
             
         elif msg_type == 'heartbeat':
             # Обновляем время последнего heartbeat
@@ -120,11 +240,40 @@ class UnifiedServer:
                 self.client_info[client_id]['last_heartbeat'] = datetime.now().isoformat()
                 
         elif msg_type == 'command_result':
-            # Результат выполнения команды
+            # Результат выполнения команды (поддержка чанков)
             command_id = (payload or {}).get('command_id')
-            result = (payload or {}).get('result')
             success = (payload or {}).get('success', False)
             error = (payload or {}).get('error')
+
+            # Если пришёл чанк
+            if (payload or {}).get('result_chunk') is not None:
+                chunk = (payload or {}).get('result_chunk')
+                idx = int((payload or {}).get('chunk_index', 0))
+                total = int((payload or {}).get('chunks_total', 1))
+                buf = self._chunk_buffers.setdefault(command_id or "", {"chunks": {}, "total": total, "received": 0})
+                buf["total"] = total
+                if idx not in buf["chunks"]:
+                    buf["chunks"][idx] = chunk
+                    buf["received"] = buf.get("received", 0) + 1
+                # Ждём EOF
+                return
+
+            # EOF: собираем
+            if (payload or {}).get('result_eof') is True:
+                buf = self._chunk_buffers.pop(command_id or "", None)
+                assembled = ""
+                if buf and isinstance(buf.get("chunks"), dict):
+                    for i in range(buf.get("total", 0)):
+                        assembled += buf["chunks"].get(i, "")
+                result = assembled
+                try:
+                    result = json.loads(assembled)
+                except Exception:
+                    pass
+            else:
+                # Обычный (нечанкованный) результат
+                result = (payload or {}).get('result')
+
             # Если результат пришёл строкой, попробуем распарсить JSON
             if isinstance(result, str):
                 try:
@@ -141,7 +290,7 @@ class UnifiedServer:
                         result['output'] = parsed_output
                     except Exception:
                         pass
-            
+
             # Сохраняем результат
             self.command_results[command_id] = {
                 'success': success,
@@ -150,13 +299,23 @@ class UnifiedServer:
                 'client_id': client_id,
                 'timestamp': datetime.now().isoformat()
             }
-            
+
             logger.info(f"📋 Результат команды {command_id}: {result if success else error}")
             
         elif msg_type == 'error':
             # Ошибка от клиента
             error = message.get('error')
             logger.error(f"❌ Ошибка от клиента {client_id}: {error}")
+        elif msg_type == 'auth':
+            # Подтверждение аутентификации (минимально)
+            token = (payload or {}).get('token')
+            if client_id in self.client_info:
+                self.client_info[client_id]['auth'] = bool(token)
+            try:
+                wrapped = await self.wrap_message({"type": "auth", "data": {"ok": True}}, client_id)
+                await websocket.send_text(wrapped)
+            except Exception:
+                pass
     
     async def websocket_handler(self, websocket: WebSocket):
         """Обработчик WebSocket соединений"""
@@ -196,7 +355,7 @@ class UnifiedServer:
                             continue
 
                     logger.info(f"📨 Получено сырое сообщение: {message}")
-                    data = json.loads(message)
+                    data = await self.unwrap_message(message, client_id or "unknown")
                     logger.info(f"📨 Получено сообщение: {data}")
                     # Нормализуем структуру: поддерживаем и {type, data:{...}}, и плоский вариант
                     msg_type = data.get('type')
@@ -207,6 +366,10 @@ class UnifiedServer:
                         logger.info(f"🔐 Регистрация клиента: {payload}")
                         client_id = await self.register_client(websocket, payload)
                         logger.info(f"✅ Клиент зарегистрирован с ID: {client_id}")
+                        # Сбрасываем seq при новой регистрации (переподключение)
+                        if client_id in self._encryption_state:
+                            self._encryption_state[client_id] = {"seq_out": 0, "seq_in": 0}
+                            logger.info(f"🔄 Сброшены seq для клиента {client_id}")
                     
                     # Обрабатываем сообщение
                     if client_id:
@@ -240,21 +403,28 @@ class UnifiedServer:
         # Генерируем ID команды
         command_id = f"cmd_{int(time.time())}_{client_id}"
         
-        # Создаем сообщение команды
+        # Создаем сообщение команды в едином формате
+        # Поддерживаем варианты входа: str, {name, params}, {command, args}
+        command_msg = {"type": "command", "command_id": command_id}
         if isinstance(command, dict):
-            command_msg = dict(command)
-            command_msg["command_id"] = command_id
-            command_msg.setdefault("type", "command")
+            # Унифицируем поля
+            name = command.get("command") or command.get("name") or ""
+            if not name and "type" in command and command["type"] != "command":
+                name = command["type"]
+            params = command.get("args") or command.get("params") or []
+            # Если params — словарь, преобразуем в массив ключ=значение
+            if isinstance(params, dict):
+                params = [f"{k}={v}" for k, v in params.items()]
+            command_msg["command"] = name
+            if params:
+                command_msg["args"] = params
         else:
-            command_msg = {
-                "type": "command",
-                "command": str(command),
-                "command_id": command_id
-            }
+            command_msg["command"] = str(command)
         
         try:
             # Отправляем команду
-            await self.clients[client_id].send_text(json.dumps(command_msg))
+            wrapped = await self.wrap_message(command_msg, client_id)
+            await self.clients[client_id].send_text(wrapped)
             
             # Добавляем в историю
             self.command_history.append({
@@ -271,6 +441,14 @@ class UnifiedServer:
         except Exception as e:
             logger.error(f"❌ Ошибка отправки команды: {e}")
             raise HTTPException(status_code=500, detail=f"Ошибка отправки команды: {e}")
+
+    async def send_cancel_to_client(self, client_id: str, command_id: str) -> None:
+        """Отправка запроса отмены команды клиенту"""
+        if client_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Клиент не найден")
+        msg = {"type": "cancel", "data": {"command_id": command_id}}
+        wrapped = await self.wrap_message(msg, client_id)
+        await self.clients[client_id].send_text(wrapped)
     
     def get_clients_list(self) -> list:
         """Получение списка клиентов"""
@@ -500,6 +678,12 @@ async def get_command_result(command_id: str):
     if not result:
         raise HTTPException(status_code=404, detail="Результат команды не найден")
     return result
+
+@app.post("/api/commands/{client_id}/{command_id}/cancel")
+async def cancel_command(client_id: str, command_id: str):
+    """Отмена выполнения команды у клиента"""
+    await server.send_cancel_to_client(client_id, command_id)
+    return {"success": True, "message": "Запрос на отмену отправлен"}
 
 if __name__ == "__main__":
     import argparse
