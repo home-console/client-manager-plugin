@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Единый сервер с WebSocket и FastAPI REST API
+Запуск модульного сервера
 """
 
 import logging
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 if __name__ == "__main__":
-    logger.info("🚀 Запуск единого сервера...")
+    logger.info("🚀 Запуск модульного сервера...")
     uvicorn.run(
         app,
         host="0.0.0.0",
