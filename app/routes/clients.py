@@ -4,18 +4,15 @@
 
 import logging
 from typing import List
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 
 from ..core.models import ClientInfo
-from ..core.websocket_handler import WebSocketHandler
+from ..dependencies import get_websocket_handler
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Получаем экземпляр WebSocket обработчика (синглтон)
-websocket_handler = WebSocketHandler()
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -101,31 +98,117 @@ async def root():
     return HTMLResponse(content=html_content)
 
 
-@router.get("/api/clients", response_model=List[ClientInfo])
-async def get_clients():
-    """Получить список всех клиентов"""
-    return list(websocket_handler.client_manager.get_all_clients().values())
+@router.get("/api/clients", response_model=List[ClientInfo], tags=["clients"])
+async def get_clients(handler = Depends(get_websocket_handler)):
+    """
+    Получить список всех подключенных клиентов
+    
+    Возвращает информацию о всех клиентах, которые сейчас подключены к серверу через WebSocket.
+    
+    **Возвращаемые данные:**
+    - `id`: Уникальный идентификатор клиента
+    - `hostname`: Имя хоста клиента
+    - `ip`: IP адрес клиента
+    - `port`: Порт клиента
+    - `status`: Статус клиента (connected/disconnected)
+    - `connected_at`: Время подключения (ISO format)
+    - `last_heartbeat`: Время последнего heartbeat (ISO format)
+    
+    **Пример ответа:**
+    ```json
+    [
+      {
+        "id": "client-123",
+        "hostname": "laptop-user",
+        "ip": "192.168.1.100",
+        "port": 54321,
+        "status": "connected",
+        "connected_at": "2025-01-15T10:30:00",
+        "last_heartbeat": "2025-01-15T10:35:00"
+      }
+    ]
+    ```
+    """
+    return list(handler.get_all_clients().values())
 
 
-@router.get("/api/clients/{client_id}", response_model=ClientInfo)
-async def get_client(client_id: str):
-    """Получить информацию о конкретном клиенте"""
-    client_info = websocket_handler.client_manager.get_client_info(client_id)
+@router.get("/api/clients/{client_id}", response_model=ClientInfo, tags=["clients"])
+async def get_client(client_id: str, handler = Depends(get_websocket_handler)):
+    """
+    Получить информацию о конкретном клиенте
+    
+    **Параметры:**
+    - `client_id`: Уникальный идентификатор клиента
+    
+    **Возвращает:**
+    Полную информацию о клиенте включая статус подключения и последнюю активность.
+    
+    **Ошибки:**
+    - `404`: Клиент с указанным ID не найден
+    
+    **Пример запроса:**
+    ```
+    GET /api/clients/client-123
+    ```
+    
+    **Пример ответа:**
+    ```json
+    {
+      "id": "client-123",
+      "hostname": "laptop-user",
+      "ip": "192.168.1.100",
+      "port": 54321,
+      "status": "connected",
+      "connected_at": "2025-01-15T10:30:00",
+      "last_heartbeat": "2025-01-15T10:35:00"
+    }
+    ```
+    """
+    client_info = handler.get_client_info(client_id)
     if not client_info:
         raise HTTPException(status_code=404, detail="Клиент не найден")
     return client_info
 
 
-@router.delete("/api/clients/{client_id}")
-async def disconnect_client(client_id: str):
-    """Отключить клиента"""
-    websocket = websocket_handler.client_manager.get_client(client_id)
+@router.delete("/api/clients/{client_id}", tags=["clients"])
+async def disconnect_client(client_id: str, handler = Depends(get_websocket_handler)):
+    """
+    Принудительно отключить клиента от сервера
+    
+    Закрывает WebSocket соединение с указанным клиентом и удаляет его из списка активных клиентов.
+    
+    **Параметры:**
+    - `client_id`: Уникальный идентификатор клиента
+    
+    **Возвращает:**
+    Сообщение об успешном отключении.
+    
+    **Ошибки:**
+    - `404`: Клиент с указанным ID не найден
+    - `500`: Ошибка при отключении клиента
+    
+    **Пример запроса:**
+    ```
+    DELETE /api/clients/client-123
+    ```
+    
+    **Пример ответа:**
+    ```json
+    {
+      "message": "Клиент client-123 отключен"
+    }
+    ```
+    
+    **Важно:**
+    Это действие немедленно разрывает соединение с клиентом. Если клиент был в процессе выполнения команды, она будет прервана.
+    """
+    websocket = handler.client_manager.get_client(client_id)
     if not websocket:
         raise HTTPException(status_code=404, detail="Клиент не найден")
     
     try:
         await websocket.close()
-        await websocket_handler.client_manager.unregister_client(client_id)
+        await handler.client_manager.unregister_client(client_id)
         return {"message": f"Клиент {client_id} отключен"}
     except Exception as e:
         logger.error(f"Ошибка отключения клиента {client_id}: {e}")

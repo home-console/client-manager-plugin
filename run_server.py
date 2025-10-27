@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 if __name__ == "__main__":
     logger.info("🚀 Запуск модульного сервера...")
     uvicorn.run(
-        app,
+        "app.main:app",
         host="0.0.0.0",
         port=10000,
         reload=True,

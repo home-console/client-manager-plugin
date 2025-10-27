@@ -2,31 +2,42 @@
 Главное приложение FastAPI
 """
 
-import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from .core.websocket_handler import WebSocketHandler
-from .routes import clients, commands
+from .dependencies import set_websocket_handler, get_websocket_handler
+from .routes import clients, commands, health
+from .config import settings
+from .utils.structured_logger import setup_logging, get_logger, LoggingMiddleware
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Настройка structured logging
+setup_logging(
+    level=settings.log_level,
+    json_format=(settings.log_format == "json")
 )
-logger = logging.getLogger(__name__)
-
-# Получаем экземпляр WebSocket обработчика (синглтон)
-websocket_handler = WebSocketHandler()
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    logger.info("🚀 Запуск сервера...")
+    logger.info("Запуск сервера", 
+                host=settings.server_host, 
+                port=settings.server_port)
+    
+    # Инициализация WebSocket обработчика
+    handler = WebSocketHandler()
+    set_websocket_handler(handler)
+    logger.info("WebSocket обработчик инициализирован")
+    
     yield
-    logger.info("🛑 Остановка сервера...")
+    
+    # Graceful shutdown
+    logger.info("Остановка сервера")
+    await handler.cleanup()
+    logger.info("Сервер остановлен")
 
 
 def create_app() -> FastAPI:
@@ -38,12 +49,15 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
     
+    # Logging middleware (первым!)
+    app.add_middleware(LoggingMiddleware)
+    
     # CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
     )
     
@@ -51,11 +65,17 @@ def create_app() -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         """WebSocket endpoint для клиентов"""
-        await websocket_handler.handle_websocket(websocket)
+        handler = get_websocket_handler()
+        if handler:
+            await handler.handle_websocket(websocket)
+        else:
+            logger.error("WebSocket обработчик не инициализирован")
+            await websocket.close(code=1011, reason="Server not ready")
     
     # Подключение роутов
     app.include_router(clients.router)
     app.include_router(commands.router)
+    app.include_router(health.router)
     
     return app
 
