@@ -81,7 +81,14 @@ async def transfer_resume(req: PauseResumeRequest, handler = Depends(get_websock
         raise HTTPException(status_code=404, detail="Трансфер не найден")
     handler.transfers.resume(req.transfer_id)
     t = handler.transfers.get(req.transfer_id)
-    msg = {"type": "file_resume", "data": {"transfer_id": req.transfer_id}}
+    # Отправим повторный старт с offset = received
+    start_offset = t.get("received", 0)
+    direction = t.get("direction")
+    if direction == "download":
+        msg = {"type": "file_download_start", "data": {"transfer_id": req.transfer_id, "path": t.get("path"), "chunk_size": 1 << 20, "start_offset": start_offset}}
+    else:
+        # upload-to-client повторный старт не требуется: сервер сам шлет
+        msg = {"type": "file_resume", "data": {"transfer_id": req.transfer_id}}
     encrypted = await handler.encryption_service.encrypt_message(msg, t["client_id"])  # type: ignore
     await handler.websocket_manager.send_message(t["client_id"], encrypted)  # type: ignore
     return {"ok": True}

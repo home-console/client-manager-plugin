@@ -140,6 +140,12 @@ class WebSocketHandler:
             logger.error(f"❌ Ошибка WebSocket: {e}", exc_info=True)
         finally:
             if client_id != "unknown":
+                # Помечаем все трансферы клиента на паузу при отключении
+                try:
+                    paused = self.transfers.pause_all_for_client(client_id)
+                    logger.info(f"⏸️ Поставлено на паузу трансферов: {paused} для клиента {client_id}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка паузы трансферов для {client_id}: {e}")
                 await self._cleanup_client(client_id)
             self.stats["active_connections"] -= 1
     

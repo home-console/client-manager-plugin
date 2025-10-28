@@ -63,4 +63,31 @@ class TransfersManager:
     def cancel(self, transfer_id: str) -> None:
         self.set_state(transfer_id, TransferState.CANCELLED)
 
+    def pause_all_for_client(self, client_id: str) -> int:
+        """Пометить все активные трансферы клиента как paused. Возвращает количество."""
+        count = 0
+        now = time.time()
+        for tid, t in self.transfers.items():
+            if t.get("client_id") == client_id and t.get("state") in (TransferState.IN_PROGRESS, TransferState.PENDING):
+                t["state"] = TransferState.PAUSED
+                t["updated_at"] = now
+                count += 1
+        return count
+
+    def pause_stale(self, threshold_seconds: int = 60) -> int:
+        """Поставить на паузу трансферы без активности дольше threshold_seconds."""
+        now = time.time()
+        count = 0
+        for tid, t in self.transfers.items():
+            if t.get("state") == TransferState.IN_PROGRESS:
+                updated = t.get("updated_at", now)
+                if now - updated > threshold_seconds:
+                    t["state"] = TransferState.PAUSED
+                    t["updated_at"] = now
+                    count += 1
+        return count
+
+    def list_by_client(self, client_id: str) -> Dict[str, Dict[str, Any]]:
+        return {tid: t for tid, t in self.transfers.items() if t.get("client_id") == client_id}
+
 
