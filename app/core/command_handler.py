@@ -155,7 +155,10 @@ class CommandHandler:
             error = result_data.get('error', '')
             
             if command_id not in self.active_commands:
-                logger.warning(f"⚠️ Получен результат для неизвестной команды: {command_id}")
+                # Если результат уже сохранён ранее (например, после отмены), не шумим
+                if command_id in self.command_results:
+                    return
+                logger.debug(f"⚠️ Получен результат для неизвестной команды: {command_id}")
                 return
             
             # Обновляем статус команды

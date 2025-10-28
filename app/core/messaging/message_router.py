@@ -47,7 +47,7 @@ class MessageRouter:
                 logger.debug(f"Сообщение {message_type} обработано")
                 return True
             else:
-                logger.warning(f"Неизвестный тип сообщения: {message_type}")
+                logger.debug(f"Неизвестный тип сообщения: {message_type}")
                 return False
                 
         except Exception as e:
@@ -76,7 +76,11 @@ class MessageHandler:
     
     def log_message(self, message_type: str, client_id: str, action: str):
         """Логирование сообщения"""
-        self.logger.info(f"📨 {action} {message_type} от клиента {client_id}")
+        # Уменьшаем шум: heartbeat пишем на debug
+        if message_type == "heartbeat":
+            self.logger.debug(f"📨 {action} {message_type} от клиента {client_id}")
+        else:
+            self.logger.info(f"📨 {action} {message_type} от клиента {client_id}")
 
 
 class RegistrationHandler(MessageHandler):

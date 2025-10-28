@@ -24,6 +24,13 @@ class CommandRequestInternal(BaseModel):
     client_id: str
 
 
+class CommandAccepted(BaseModel):
+    """Ответ для асинхронного запуска команды"""
+    command_id: str
+    client_id: str
+    status: str = "queued"
+
+
 @router.post("/api/commands/{client_id}", response_model=CommandResult)
 async def execute_command(client_id: str, request: CommandRequest, timeout: int = 30, 
                          handler = Depends(get_websocket_handler)):
@@ -62,9 +69,36 @@ async def execute_command(client_id: str, request: CommandRequest, timeout: int 
     return result
 
 
+@router.post("/api/commands/{client_id}/async", response_model=CommandAccepted)
+async def execute_command_async(client_id: str, request: CommandRequest, handler = Depends(get_websocket_handler)):
+    """Асинхронный запуск команды: сразу возвращает command_id без ожидания результата"""
+    # Проверяем, что клиент существует
+    websocket = handler.client_manager.get_client(client_id)
+    if not websocket:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+
+    # Генерируем ID команды
+    command_id = f"cmd_{int(time.time())}"
+
+    # Определяем текст команды
+    if request.command:
+        command_text = request.command
+    elif request.name and request.params is not None:
+        command_text = f"{request.name} {request.params}"
+    else:
+        raise HTTPException(status_code=400, detail="Необходимо указать либо command, либо name+params")
+
+    # Отправляем команду (регистрация выполняется внутри send_command_to_client)
+    success = await handler.send_command_to_client(client_id, command_text, command_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Ошибка отправки команды")
+
+    return CommandAccepted(command_id=command_id, client_id=client_id, status="queued")
+
+
 @router.post("/api/commands/{client_id}/cancel")
-async def cancel_command(client_id: str, command_id: str, handler = Depends(get_websocket_handler)):
-    """Отменить команду клиенту"""
+async def cancel_command(client_id: str, command_id: str, timeout: int = 30, handler = Depends(get_websocket_handler)):
+    """Отменить команду клиенту и дождаться результата отмены"""
     # Проверяем, что клиент существует
     websocket = handler.client_manager.get_client(client_id)
     if not websocket:
@@ -75,8 +109,12 @@ async def cancel_command(client_id: str, command_id: str, handler = Depends(get_
     
     if not success:
         raise HTTPException(status_code=500, detail="Ошибка отправки отмены")
-    
-    return {"message": f"Отмена команды {command_id} отправлена клиенту {client_id}"}
+
+    # Ждём подтверждение отмены от клиента через общий механизм результатов
+    result = await handler.command_handler.wait_for_command_result(command_id, timeout)
+    if not result:
+        raise HTTPException(status_code=408, detail=f"Таймаут ожидания отмены команды ({timeout}с)")
+    return result
 
 
 @router.get("/api/commands/history", response_model=List[CommandResult])
