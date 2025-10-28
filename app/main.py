@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.websocket_handler import WebSocketHandler
 from .dependencies import set_websocket_handler, get_websocket_handler
-from .routes import clients, commands, health
+from .routes import clients, commands, health, files
 from .config import settings
 from .utils.structured_logger import setup_logging, get_logger, LoggingMiddleware
 
@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(clients.router)
     app.include_router(commands.router)
     app.include_router(health.router)
+    app.include_router(files.router)
     
     return app
 

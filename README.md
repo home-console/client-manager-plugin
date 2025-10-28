@@ -99,6 +99,23 @@ curl -k https://localhost:10000/api/clients
 - `GET /api/commands/history` — история команд
 - `GET /api/commands/{command_id}` — результат команды
 
+#### Файлы (REST + WS)
+- `POST /api/files/upload/init` — инициализация upload, возвращает `transfer_id`
+- `GET /api/files/transfers/{transfer_id}/status` — статус/прогресс
+- `POST /api/files/transfers/pause|resume|cancel` — управление
+
+MVP-поток:
+1) REST `upload/init` → сервер фиксирует задачу, отдает `transfer_id` и переводит в `in_progress`.
+2) WS: сервер шлет клиенту `file_upload_start` с `transfer_id`, `path`, `size`, `sha256`.
+3) Клиент отправляет чанки `file_chunk` с `offset` и `chunk_hash`.
+4) Сервер может ответить `file_pause`/`file_resume`/`file_cancel` по WS.
+5) Резюмирование: REST `status` → клиент продолжает с `next_offset`.
+
+Резюм/как в торренте: используем фиксированный размер чанка (например, 1 MiB),
+подсчет `sha256` на весь файл и опционально `sha256` на каждый чанк. При повторном старте
+сервер сообщает последний подтвержденный `offset` и список принятых чанков; клиент докидывает
+нужные чанки без перезагрузки всего файла.
+
 #### Мониторинг
 - `GET /health` — простой health check
 - `GET /health/ready` — readiness probe (для Kubernetes)

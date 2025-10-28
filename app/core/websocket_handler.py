@@ -16,6 +16,8 @@ from .messaging.message_router import MessageRouter
 from .client_manager import ClientManager
 from .command_handler import CommandHandler
 from .models import ClientInfo
+from .transfers_manager import TransfersManager
+from .file_transfer_handler import FileTransferHandler
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,8 @@ class WebSocketHandler:
         self.message_router = MessageRouter()
         self.client_manager = ClientManager()
         self.command_handler = CommandHandler(self.client_manager, self.websocket_manager)
+        self.transfers = TransfersManager()
+        self.file_handler = FileTransferHandler(self.transfers, self.websocket_manager, self.encryption_service)
         
         # Регистрация обработчиков сообщений
         self._register_handlers()
@@ -69,6 +73,10 @@ class WebSocketHandler:
         self.message_router.register_handler('result_eof', self.command_handler.handle_result_eof)
         self.message_router.register_handler('command_cancel', self.command_handler.handle_command_cancel)
         self.message_router.register_handler('command_cancel_ack', self.command_handler.handle_command_cancel_ack)
+
+        # Обработчики файловых трансферов (WS)
+        self.message_router.register_handler('file_chunk', self.file_handler.handle_file_chunk)
+        self.message_router.register_handler('file_eof', self.file_handler.handle_file_eof)
         
         # Обработчик аутентификации
         self.message_router.register_handler('auth', self._handle_auth)
