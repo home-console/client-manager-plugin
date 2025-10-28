@@ -18,7 +18,9 @@ class AuthService:
     """Сервис аутентификации"""
     
     def __init__(self, secret_key: str = None, algorithm: str = "HS256"):
-        self.secret_key = secret_key or os.getenv("JWT_SECRET_KEY", "change-this-secret-key-in-production")
+        self.secret_key = secret_key or os.getenv("JWT_SECRET_KEY")
+        if not self.secret_key:
+            raise RuntimeError("JWT_SECRET_KEY must be set via environment for AuthService")
         self.algorithm = algorithm
         self.token_expire_minutes = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
         

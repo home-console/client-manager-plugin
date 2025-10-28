@@ -349,8 +349,39 @@ class WebSocketHandler:
             "server_stats": self.stats,
             "command_stats": self.command_handler.get_command_stats(),
             "client_count": self.websocket_manager.get_connection_count(),
-            "uptime": time.time() - self.stats["uptime_start"]
+            "uptime": time.time() - self.stats["uptime_start"],
+            # Сводка по файловым трансферам
+            "transfer_stats": self._collect_transfer_stats()
         }
+
+    def _collect_transfer_stats(self) -> Dict[str, Any]:
+        transfers = getattr(self, "transfers", None)
+        summary = {
+            "active": 0,
+            "paused": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "bytes_received": 0,
+            "total": 0
+        }
+        if not transfers:
+            return summary
+        for tid, t in transfers.transfers.items():
+            state = str(t.get("state"))
+            summary["total"] += 1
+            if state == "in_progress":
+                summary["active"] += 1
+            elif state == "paused":
+                summary["paused"] += 1
+            elif state == "completed":
+                summary["completed"] += 1
+            elif state == "failed":
+                summary["failed"] += 1
+            elif state == "cancelled":
+                summary["cancelled"] += 1
+            summary["bytes_received"] += int(t.get("bytes_received", 0))
+        return summary
     
     async def broadcast_message(self, message: dict, exclude_clients: set = None):
         """Широковещательная отправка сообщения"""

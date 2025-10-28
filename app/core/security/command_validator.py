@@ -63,6 +63,9 @@ class CommandValidator:
                 # Сетевая информация
                 "ping", "traceroute", "netstat", "ss", "ip",
                 "ifconfig", "route", "arp", "nslookup", "dig", "host",
+
+                # Windows safe/info
+                "echo", "type", "ver", "whoami", "hostname", "ipconfig", "tasklist",
             },
             
             CommandSecurityLevel.MODERATE: {
@@ -92,12 +95,18 @@ class CommandValidator:
                 
                 # Управление сервисами
                 "systemctl", "service", "initctl",
+
+                # Windows dangerous
+                "taskkill", "sc", "net", "powershell",
             },
             
             CommandSecurityLevel.RESTRICTED: {
                 # Полностью запрещены
                 "dd", "mkfs", "fdisk", "parted", "gdisk",
                 "shutdown", "reboot", "halt", "poweroff", "init",
+                # Windows critical
+                "shutdown", "format", "diskpart", "bcdedit", "vssadmin", "wevtutil", "reg", "cipher",
+                "wmic",
                 "su", "sudo", "passwd", "chpasswd",
                 "useradd", "userdel", "usermod",
                 "groupadd", "groupdel", "groupmod",
@@ -128,6 +137,18 @@ class CommandValidator:
             # Рекурсивное удаление корня
             r'rm\s+(-[rfRF]+\s+)*[/]+\s*$',
             r'rm\s+.*\s+[/]+\s*$',
+
+            # Windows опасности
+            r'format\s+\w:',
+            r'diskpart',
+            r'shutdown\s+/(s|r|p)',
+            r'vssadmin',
+            r'wevtutil',
+            r'bcdedit',
+            r'reg(\s+add|\s+delete|\s+import)',
+            r'cipher\s+/w',
+            r'del\s+/s\s+[A-Za-z]:\\',
+            r'powershell\s+.*(Invoke-Expression|Invoke-WebRequest|IEX)'
         ]
         
         return [re.compile(pattern, re.IGNORECASE) for pattern in patterns]

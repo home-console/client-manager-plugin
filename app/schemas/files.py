@@ -8,6 +8,7 @@ class UploadInitRequest(BaseModel):
     sha256: Optional[str] = None
     direction: Literal["upload", "download"] = "download"
     source_path_server: Optional[str] = Field(default=None, description="Локальный путь на сервере для direction=upload")
+    dest_path_server: Optional[str] = Field(default=None, description="Путь сохранения на сервере для direction=download")
 
 
 class UploadInitResponse(BaseModel):

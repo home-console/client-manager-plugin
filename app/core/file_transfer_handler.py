@@ -15,6 +15,15 @@ class FileTransferHandler:
         self.transfers = transfers
         self.websocket_manager = websocket_manager
         self.encryption_service = encryption_service
+        # Лимиты (MVP) c конфигом из ENV
+        try:
+            self.max_chunk_size = int(os.getenv("MAX_CHUNK_SIZE", str(1 << 22)))  # 4 MiB
+        except Exception:
+            self.max_chunk_size = 1 << 22
+        # DENY-LIST директорий: куда НЕЛЬЗЯ писать файлы (по умолчанию пусто — разрешено везде)
+        deny_paths = os.getenv("DENY_PATHS", "")
+        dirs = [p.strip() for p in deny_paths.split(",") if p.strip()]
+        self.denied_dirs = dirs
 
     async def handle_file_chunk(self, websocket: WebSocket, message: Dict[str, Any], client_id: str):
         data = message.get("data", {})
@@ -29,12 +38,41 @@ class FileTransferHandler:
             # Игнор, можно отправить nack
             return
 
+        # Проверка лимита размера чанка
+        if self.max_chunk_size and chunk_size and chunk_size > self.max_chunk_size:
+            nack = {
+                "type": "file_chunk_ack",
+                "data": {
+                    "transfer_id": transfer_id,
+                    "chunk_index": chunk_index,
+                    "received": t.get("received", 0),
+                    "ok": False,
+                    "error": "chunk_too_large",
+                },
+            }
+            encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+            await self.websocket_manager.send_message(client_id, encrypted)
+            return
+
         # Декод base64 и запись по offset в файл назначения (MVP: temp path)
         b64 = data.get("data_b64", "")
         try:
             raw = base64.b64decode(b64)
         except Exception:
-            raw = b""
+            # Ошибка декодирования — отправляем NACK и выходим
+            nack = {
+                "type": "file_chunk_ack",
+                "data": {
+                    "transfer_id": transfer_id,
+                    "chunk_index": chunk_index,
+                    "received": t.get("received", 0),
+                    "ok": False,
+                    "error": "decode_failed",
+                },
+            }
+            encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+            await self.websocket_manager.send_message(client_id, encrypted)
+            return
 
         # Проверка хэша чанка (если пришел sha256)
         if chunk_hash:
@@ -56,6 +94,53 @@ class FileTransferHandler:
                 await self.websocket_manager.send_message(client_id, encrypted)
                 return
         dest = t.get("dest_path") or f"/tmp/transfer_{transfer_id}.bin"
+        # Валидация пути (deny-list) с commonpath и нормализацией
+        try:
+            dest_real = os.path.realpath(dest)
+            denied = False
+            for d in self.denied_dirs:
+                base = os.path.realpath(d)
+                try:
+                    common = os.path.commonpath([dest_real, base])
+                except Exception:
+                    common = ""
+                if os.name == 'nt':
+                    if os.path.normcase(common) == os.path.normcase(base):
+                        denied = True
+                        break
+                else:
+                    if common == base:
+                        denied = True
+                        break
+            if denied:
+                nack = {
+                    "type": "file_chunk_ack",
+                    "data": {
+                        "transfer_id": transfer_id,
+                        "chunk_index": chunk_index,
+                        "received": t.get("received", 0),
+                        "ok": False,
+                        "error": "path_denied",
+                    },
+                }
+                encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+                await self.websocket_manager.send_message(client_id, encrypted)
+                return
+        except Exception:
+            # Любая ошибка валидации — безопасный отказ
+            nack = {
+                "type": "file_chunk_ack",
+                "data": {
+                    "transfer_id": transfer_id,
+                    "chunk_index": chunk_index,
+                    "received": t.get("received", 0),
+                    "ok": False,
+                    "error": "path_validation_error",
+                },
+            }
+            encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+            await self.websocket_manager.send_message(client_id, encrypted)
+            return
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         # Запись по offset (random access): используем r+b / w+b
         mode = "r+b" if os.path.exists(dest) else "w+b"
@@ -67,8 +152,14 @@ class FileTransferHandler:
         if chunk_size and len(raw) != chunk_size and t.get("size") and t.get("size") != offset+len(raw):
             # можно пометить как failed/nack; пока игнорируем
             pass
+        # Метрики приёма
         received = max(t.get("received", 0), offset + len(raw))
         self.transfers.update_progress(transfer_id, received, state=TransferState.IN_PROGRESS)
+        # bytes_received
+        try:
+            self.transfers.transfers[transfer_id]["bytes_received"] = self.transfers.transfers[transfer_id].get("bytes_received", 0) + len(raw)
+        except Exception:
+            pass
 
         # Отправляем ack чанка (по тому же WS клиенту)
         ack = {
