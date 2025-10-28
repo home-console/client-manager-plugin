@@ -17,12 +17,12 @@ router = APIRouter()
 
 @router.post("/api/files/upload/init", response_model=UploadInitResponse)
 async def upload_init(req: UploadInitRequest, handler = Depends(get_websocket_handler)):
-    # Базовая валидация пути и размера (расширим позже)
-    if not req.path or req.size < 0:
+    # Базовая валидация пути (size больше не обязателен)
+    if not req.path:
         raise HTTPException(status_code=400, detail="Некорректные параметры")
 
     # Создаем трансфер и вернем transfer_id
-    transfer_id = handler.transfers.create_upload(req.client_id, req.path, req.size, req.sha256, req.direction)
+    transfer_id = handler.transfers.create_upload(req.client_id, req.path, None, req.sha256, req.direction)
     # Отправка WS-команды клиенту будет на следующем шаге (init_upload)
     handler.transfers.set_state(transfer_id, TransferState.IN_PROGRESS)
 

@@ -18,7 +18,7 @@ class TransfersManager:
     def __init__(self) -> None:
         self.transfers: Dict[str, Dict[str, Any]] = {}
 
-    def create_upload(self, client_id: str, path: str, size: int, sha256: Optional[str] = None, direction: str = "download") -> str:
+    def create_upload(self, client_id: str, path: str, size: Optional[int] = None, sha256: Optional[str] = None, direction: str = "download") -> str:
         transfer_id = str(uuid.uuid4())
         self.transfers[transfer_id] = {
             "type": "file",

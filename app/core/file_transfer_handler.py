@@ -64,7 +64,7 @@ class FileTransferHandler:
             f.write(raw)
 
         # Простая проверка длины
-        if len(raw) != chunk_size and t.get("size", 0) != offset+len(raw):
+        if chunk_size and len(raw) != chunk_size and t.get("size") and t.get("size") != offset+len(raw):
             # можно пометить как failed/nack; пока игнорируем
             pass
         received = max(t.get("received", 0), offset + len(raw))
@@ -90,25 +90,44 @@ class FileTransferHandler:
         if not t:
             return
 
-        # Финальная проверка sha256 всего файла (если ожидание задано)
+        # Всегда считаем финальный sha256 принятого файла
         final_state = TransferState.COMPLETED
         expected_sha = t.get("sha256")
-        if expected_sha:
-            dest = t.get("dest_path") or f"/tmp/transfer_{transfer_id}.bin"
-            try:
-                with open(dest, "rb") as f:
-                    hasher = hashlib.sha256()
-                    for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                        hasher.update(chunk)
-                if hasher.hexdigest() != expected_sha:
-                    final_state = TransferState.FAILED
-            except Exception:
-                final_state = TransferState.FAILED
+        dest = t.get("dest_path") or f"/tmp/transfer_{transfer_id}.bin"
+        computed_sha = None
+        try:
+            with open(dest, "rb") as f:
+                hasher = hashlib.sha256()
+                size_bytes = 0
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    if not chunk:
+                        break
+                    size_bytes += len(chunk)
+                    hasher.update(chunk)
+                computed_sha = hasher.hexdigest()
+            # Обновим известный размер, если он не был задан
+            if t.get("size") is None:
+                self.transfers.transfers[transfer_id]["size"] = size_bytes
+        except Exception:
+            final_state = TransferState.FAILED
 
-        if t.get("received", 0) >= t.get("size", 0) and final_state == TransferState.COMPLETED:
+        # Сохраняем вычисленный sha256 в состоянии
+        if computed_sha:
+            self.transfers.transfers[transfer_id]["sha256"] = computed_sha
+
+        # Если передан expected_sha — сверяем
+        if expected_sha and computed_sha and computed_sha != expected_sha:
+            final_state = TransferState.FAILED
+
+        # Если sha256 не задан — завершаем по EOF всегда
+        if not expected_sha and final_state == TransferState.COMPLETED:
             self.transfers.set_state(transfer_id, TransferState.COMPLETED)
         else:
-            self.transfers.set_state(transfer_id, TransferState.FAILED)
+            # Если sha256 задан — завершаем по результату проверки
+            if final_state == TransferState.COMPLETED:
+                self.transfers.set_state(transfer_id, TransferState.COMPLETED)
+            else:
+                self.transfers.set_state(transfer_id, TransferState.FAILED)
 
         done = {
             "type": "file_transfer_done",
@@ -117,6 +136,7 @@ class FileTransferHandler:
                 "state": self.transfers.get(transfer_id).get("state"),
                 "received": self.transfers.get(transfer_id).get("received"),
                 "size": self.transfers.get(transfer_id).get("size"),
+                "sha256": self.transfers.get(transfer_id).get("sha256"),
             },
         }
         encrypted = await self.encryption_service.encrypt_message(done, client_id)
