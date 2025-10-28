@@ -25,10 +25,11 @@ class WebSocketManager:
             self.active_connections[client_id] = websocket
             self.connection_metadata[client_id] = metadata or {}
             
-            # Запускаем задачу мониторинга соединения
-            self.connection_tasks[client_id] = asyncio.create_task(
-                self._monitor_connection(client_id, websocket)
-            )
+            # Запускаем задачу мониторинга соединения только для зарегистрированных клиентов
+            if client_id != "unknown":
+                self.connection_tasks[client_id] = asyncio.create_task(
+                    self._monitor_connection(client_id, websocket)
+                )
             
             logger.info(f"✅ WebSocket подключен: {client_id}")
             return True
@@ -92,6 +93,33 @@ class WebSocketManager:
         """Получить количество активных соединений"""
         return len(self.active_connections)
     
+    async def start_monitoring(self, client_id: str):
+        """Запустить мониторинг для зарегистрированного клиента"""
+        if client_id in self.active_connections and client_id not in self.connection_tasks:
+            websocket = self.active_connections[client_id]
+            self.connection_tasks[client_id] = asyncio.create_task(
+                self._monitor_connection(client_id, websocket)
+            )
+            logger.info(f"🔍 Мониторинг запущен для клиента {client_id}")
+    
+    async def update_client_id(self, old_client_id: str, new_client_id: str):
+        """Обновить client_id для существующего соединения"""
+        if old_client_id in self.active_connections:
+            websocket = self.active_connections.pop(old_client_id)
+            metadata = self.connection_metadata.pop(old_client_id, {})
+            
+            self.active_connections[new_client_id] = websocket
+            self.connection_metadata[new_client_id] = metadata
+            
+            # Отменяем старую задачу мониторинга если есть
+            if old_client_id in self.connection_tasks:
+                self.connection_tasks[old_client_id].cancel()
+                del self.connection_tasks[old_client_id]
+            
+            logger.info(f"🔄 Client ID обновлен: {old_client_id} -> {new_client_id}")
+            return True
+        return False
+    
     async def _monitor_connection(self, client_id: str, websocket: WebSocket):
         """Мониторинг соединения"""
         try:
@@ -100,8 +128,13 @@ class WebSocketManager:
                 if client_id not in self.active_connections:
                     break
                 
-                # Отправляем ping для проверки соединения
-                await websocket.ping()
+                # Отправляем ping сообщение для проверки соединения
+                try:
+                    await websocket.send_text('{"type": "ping"}')
+                except Exception as ping_error:
+                    logger.debug(f"Ping failed for {client_id}: {ping_error}")
+                    break
+                
                 await asyncio.sleep(30)  # Проверяем каждые 30 секунд
                 
         except WebSocketDisconnect:

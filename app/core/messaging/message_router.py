@@ -2,6 +2,7 @@
 Маршрутизатор сообщений
 """
 
+import json
 import logging
 from typing import Dict, Callable, Any
 from fastapi import WebSocket
@@ -131,7 +132,7 @@ class HeartbeatHandler(MessageHandler):
             "timestamp": message.get('data', {}).get('timestamp')
         }
         
-        await websocket.send_text(str(response))
+        await websocket.send_text(json.dumps(response))
 
 
 class CommandResultHandler(MessageHandler):

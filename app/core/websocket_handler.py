@@ -107,13 +107,20 @@ class WebSocketHandler:
                 # Обработка регистрации (особый случай)
                 if message.get('type') == 'register':
                     # Обновляем client_id после регистрации
-                    client_id = await self._handle_registration(websocket, message)
-                    if client_id != "unknown":
+                    new_client_id = await self._handle_registration(websocket, message)
+                    if new_client_id != "unknown":
+                        # Обновляем client_id в WebSocketManager
+                        await self.websocket_manager.update_client_id(client_id, new_client_id)
+                        client_id = new_client_id
+                        
                         # Обновляем метаданные соединения
                         self.websocket_manager.update_metadata(client_id, {
                             'registered': True,
                             'registered_at': time.time()
                         })
+                        
+                        # Запускаем мониторинг соединения после регистрации
+                        await self.websocket_manager.start_monitoring(client_id)
                 else:
                     # Маршрутизация остальных сообщений
                     await self.message_router.route_message(websocket, message, client_id)
@@ -151,7 +158,13 @@ class WebSocketHandler:
         
         # Шифруем и отправляем ответ
         encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
-        await websocket.send_text(encrypted_response)
+        
+        # Проверяем, что соединение еще активно
+        try:
+            await websocket.send_text(encrypted_response)
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки ответа регистрации: {e}")
+            return client_id  # Возвращаем client_id даже если не удалось отправить ответ
         
         logger.info(f"✅ Регистрация завершена для клиента {client_id}")
         return client_id
@@ -267,11 +280,17 @@ class WebSocketHandler:
                 }
             }
             
+            # Регистрируем команду в command_handler перед отправкой
+            await self.command_handler.add_command(client_id, command_id, command, timeout)
+            
             encrypted_msg = await self.encryption_service.encrypt_message(command_msg, client_id)
             success = await self.websocket_manager.send_message(client_id, encrypted_msg)
             
             if success:
                 logger.info(f"📤 Команда отправлена клиенту {client_id}: {command}")
+            else:
+                # Если отправка не удалась, удаляем команду из активных
+                await self.command_handler.remove_command(command_id)
             
             return success
             

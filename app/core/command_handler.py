@@ -385,6 +385,31 @@ class CommandHandler:
         """Получить результат команды"""
         return self.command_results.get(command_id)
     
+    async def add_command(self, client_id: str, command_id: str, command: str, timeout: int = 300):
+        """Добавить команду в активные команды"""
+        self.active_commands[command_id] = {
+            'client_id': client_id,
+            'command': command,
+            'status': CommandStatus.PENDING,
+            'start_time': time.time(),
+            'timeout': timeout
+        }
+        
+        # Создаем event для ожидания результата
+        self.command_events[command_id] = asyncio.Event()
+        
+        logger.debug(f"📝 Команда {command_id} добавлена в активные команды")
+    
+    async def remove_command(self, command_id: str):
+        """Удалить команду из активных команд"""
+        if command_id in self.active_commands:
+            del self.active_commands[command_id]
+        
+        if command_id in self.command_events:
+            del self.command_events[command_id]
+        
+        logger.debug(f"🗑️ Команда {command_id} удалена из активных команд")
+    
     async def wait_for_command_result(self, command_id: str, timeout: int = 30) -> Optional[CommandResult]:
         """
         Ожидание результата команды через Event (эффективный подход)
