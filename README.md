@@ -95,6 +95,7 @@ curl -k https://localhost:10000/api/clients
 #### Команды
 - `POST /api/commands/{client_id}` — отправить команду клиенту
 - `POST /api/commands/{client_id}/cancel` — отменить команду
+- `GET /api/commands/{command_id}/status` — статус команды (active/result)
 - `GET /api/commands/history` — история команд
 - `GET /api/commands/{command_id}` — результат команды
 
@@ -156,6 +157,46 @@ curl -k -X POST https://localhost:10000/api/commands/client-123 \
   "result": "..."
 }
 ```
+
+#### Проверить статус команды
+```bash
+curl -k "https://localhost:10000/api/commands/cmd_123/status"
+```
+
+Вариант 1: команда активна
+```json
+{
+  "command_id": "cmd_123",
+  "client_id": "client-123",
+  "status": "running",
+  "started_at": "2025-01-15T10:35:00",
+  "timeout": 30
+}
+```
+
+Вариант 2: команда завершена (возвращается сохранённый результат)
+```json
+{
+  "command_id": "cmd_123",
+  "client_id": "client-123",
+  "success": true,
+  "result": "...",
+  "error": null,
+  "timestamp": "2025-01-15T10:35:10"
+}
+```
+
+#### Отменить команду
+```bash
+curl -k -X POST "https://localhost:10000/api/commands/client-123/cancel" \
+  -H "Content-Type: application/json" \
+  -d '{"command_id":"cmd_123"}'
+```
+
+Поведение:
+- Сервер отправляет `command_cancel` клиенту и ждёт результата отмены.
+- Клиент присылает `command_cancel_ack` и итоговый `command_result` с `error: "cancelled"`.
+- При отсутствии ответа в пределах таймаута вернётся HTTP 408.
 
 #### Проверить здоровье сервера
 ```bash
