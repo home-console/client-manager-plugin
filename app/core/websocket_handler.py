@@ -68,6 +68,7 @@ class WebSocketHandler:
         self.message_router.register_handler('result_chunk', self.command_handler.handle_result_chunk)
         self.message_router.register_handler('result_eof', self.command_handler.handle_result_eof)
         self.message_router.register_handler('command_cancel', self.command_handler.handle_command_cancel)
+        self.message_router.register_handler('command_cancel_ack', self.command_handler.handle_command_cancel_ack)
         
         # Обработчик аутентификации
         self.message_router.register_handler('auth', self._handle_auth)

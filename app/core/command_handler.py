@@ -43,6 +43,7 @@ class CommandStatus(Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     TIMEOUT = "timeout"
+    CANCELLING = "cancelling"
 
 
 class CommandHandler:
@@ -162,7 +163,13 @@ class CommandHandler:
                 return
             
             # Обновляем статус команды
-            self.active_commands[command_id]['status'] = CommandStatus.COMPLETED if success else CommandStatus.FAILED
+            if success:
+                self.active_commands[command_id]['status'] = CommandStatus.COMPLETED
+            else:
+                if str(error).lower() == "cancelled":
+                    self.active_commands[command_id]['status'] = CommandStatus.CANCELLED
+                else:
+                    self.active_commands[command_id]['status'] = CommandStatus.FAILED
             
             # Создаем результат
             command_result = CommandResult(
@@ -184,7 +191,10 @@ class CommandHandler:
             if success:
                 self.stats["successful_commands"] += 1
             else:
-                self.stats["failed_commands"] += 1
+                if str(error).lower() == "cancelled":
+                    self.stats["cancelled_commands"] += 1
+                else:
+                    self.stats["failed_commands"] += 1
             
             # Удаляем из активных команд
             del self.active_commands[command_id]
@@ -251,16 +261,25 @@ class CommandHandler:
                 # Отправляем сигнал отмены клиенту
                 await self._send_cancel_to_client(client_id, command_id)
                 
-                # Обновляем статус
-                self.active_commands[command_id]['status'] = CommandStatus.CANCELLED
+                # Обновляем статус на "cancelling" — ждём ack/результат
+                self.active_commands[command_id]['status'] = CommandStatus.CANCELLING
                 
-                # Обновляем статистику
-                self.stats["cancelled_commands"] += 1
                 
                 logger.info(f"🚫 Команда {command_id} отменена")
             
         except Exception as e:
             logger.error(f"❌ Ошибка отмены команды: {e}")
+
+    async def handle_command_cancel_ack(self, websocket: WebSocket, message: dict, client_id: str):
+        """ACK от клиента: отмена принята, команда в процессе завершения"""
+        try:
+            data = message.get('data', {})
+            command_id = data.get('command_id', '')
+            if command_id in self.active_commands:
+                self.active_commands[command_id]['status'] = CommandStatus.CANCELLING
+                logger.info(f"🛈 Получен ACK отмены для команды {command_id} от {client_id}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки command_cancel_ack: {e}")
     
     async def _send_command_to_client(self, client_id: str, command: str, command_id: str, timeout: int):
         """Отправка команды клиенту"""
@@ -286,7 +305,7 @@ class CommandHandler:
             return
         
         cancel_msg = {
-            "type": "cancel",
+            "type": "command_cancel",
             "data": {
                 "command_id": command_id
             }

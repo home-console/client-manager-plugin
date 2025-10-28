@@ -123,6 +123,28 @@ async def get_command_history(handler = Depends(get_websocket_handler)):
     return handler.command_handler.get_command_history()
 
 
+@router.get("/api/commands/{command_id}/status")
+async def get_command_status(command_id: str, handler = Depends(get_websocket_handler)):
+    """Получить статус команды: active (с деталями) или финальный результат"""
+    # Сначала проверим активные команды
+    active = handler.command_handler.get_active_commands().get(command_id)
+    if active:
+        return {
+            "command_id": command_id,
+            "client_id": active.get("client_id"),
+            "status": str(active.get("status")),
+            "started_at": active.get("started_at"),
+            "timeout": active.get("timeout")
+        }
+
+    # Если не активна — отдадим сохранённый результат (если есть)
+    result = handler.command_handler.get_command_result(command_id)
+    if result:
+        return result
+
+    raise HTTPException(status_code=404, detail="Команда не найдена")
+
+
 @router.get("/api/commands/{command_id}", response_model=CommandResult)
 async def get_command_result(command_id: str, handler = Depends(get_websocket_handler)):
     """Получить результат команды"""
