@@ -4,7 +4,7 @@
 
 import os
 from typing import List
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 
@@ -57,9 +57,12 @@ class Settings(BaseSettings):
     enable_metrics: bool = Field(default=True, env="ENABLE_METRICS")
     metrics_port: int = Field(default=9090, env="METRICS_PORT")
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # Pydantic v2: настройка чтения .env и игнор лишних ключей
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra='ignore',
+    )
 
 
 # Глобальный экземпляр настроек

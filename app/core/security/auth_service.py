@@ -8,10 +8,13 @@ import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 
+from dotenv import load_dotenv
 import jwt
 from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 
 class AuthService:
@@ -125,7 +128,7 @@ class AuthService:
             "revoked_tokens": len(self.revoked_tokens),
             "token_expire_minutes": self.token_expire_minutes
         }
-
-
-# Глобальный экземпляр (будет заменен на DI)
-auth_service = AuthService()
+"""
+Экземпляры AuthService создаются там, где нужны (например, в WebSocketHandler),
+чтобы избежать падения при импорте модуля, если переменные окружения ещё не заданы.
+"""

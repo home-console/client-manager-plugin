@@ -19,7 +19,17 @@ class EncryptionService:
     
     def __init__(self, encryption_key: str = None, salt: bytes = None):
         self.encryption_key = encryption_key or os.getenv("SERVER_ENCRYPTION_KEY", "my-super-secret-encryption-key-2025")
-        self.salt = salt or b"remote-client-salt"
+        salt_env = os.getenv("SERVER_ENCRYPTION_SALT")
+        if salt is not None:
+            self.salt = salt
+        elif salt_env:
+            try:
+                import base64 as _b64
+                self.salt = _b64.b64decode(salt_env)
+            except Exception:
+                self.salt = salt_env.encode("utf-8")
+        else:
+            self.salt = b"remote-client-salt"
         
         if self.encryption_key:
             self._encryption_key = derive_key(self.encryption_key, self.salt)
@@ -83,8 +93,8 @@ class EncryptionService:
         try:
             wrapper = json.loads(data)
             if "payload" not in wrapper or "hmac" not in wrapper:
-                # Нешифрованное сообщение (разрешаем до регистрации)
-                return wrapper
+                # При включенном шифровании принимаем только зашифрованные сообщения
+                raise ValueError("Unencrypted WebSocket message is not allowed when encryption is enabled")
             
             # Инициализируем состояние если еще нет
             if client_id not in self.encryption_states:
@@ -122,8 +132,9 @@ class EncryptionService:
             return message
             
         except Exception as e:
-            logger.warning(f"Ошибка дешифрования: {e}, обрабатываем как plaintext")
-            return json.loads(data)
+            # Строгий режим: при ошибке дешифрования/HMAC отвергаем сообщение
+            logger.warning(f"Ошибка дешифрования/WebSocket безопасности: {e}")
+            raise
     
     def cleanup_client(self, client_id: str):
         """Очистка данных шифрования для клиента"""

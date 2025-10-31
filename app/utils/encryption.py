@@ -12,7 +12,7 @@ def derive_key(password: str, salt: bytes) -> bytes:
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        iterations=4096
+        iterations=310_000
     )
     return kdf.derive(password.encode())
 

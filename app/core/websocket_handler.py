@@ -6,6 +6,11 @@
 import asyncio
 import logging
 import time
+import os
+import secrets
+import base64
+import hmac as _hmac
+import hashlib
 from typing import Optional, Dict, Any
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -18,6 +23,7 @@ from .command_handler import CommandHandler
 from .models import ClientInfo
 from .transfers_manager import TransfersManager
 from .file_transfer_handler import FileTransferHandler
+from app.utils.encryption import compute_hmac
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +86,9 @@ class WebSocketHandler:
         
         # Обработчик аутентификации
         self.message_router.register_handler('auth', self._handle_auth)
+
+        # Обработчик ответа на WS challenge (мягкий режим)
+        self.message_router.register_handler('auth_challenge_response', self._handle_auth_challenge_response)
         
         # Обработчик key_exchange (игнорируем в PSK режиме)
         self.message_router.register_handler('key_exchange', self._handle_key_exchange)
@@ -103,6 +112,12 @@ class WebSocketHandler:
             self.stats["total_connections"] += 1
             self.stats["active_connections"] += 1
             
+            # Отправляем WS challenge (мягкий режим)
+            try:
+                await self._send_ws_challenge(websocket, client_id)
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось отправить WS challenge: {e}")
+
             # Основной цикл обработки сообщений
             while True:
                 # Получение сообщения
@@ -110,7 +125,16 @@ class WebSocketHandler:
                 logger.debug(f"📥 Получено сообщение от {client_id}: {len(data)} байт")
                 
                 # Дешифрование и маршрутизация
-                message = await self.encryption_service.decrypt_message(data, client_id)
+                try:
+                    message = await self.encryption_service.decrypt_message(data, client_id)
+                except Exception as sec_err:
+                    # Немедленно закрываем соединение при провале дешифрования/HMAC/формата
+                    reason = f"Security error: {sec_err}"
+                    logger.warning(f"🔒 Отклонено сообщение и закрыто соединение {client_id}: {reason}")
+                    try:
+                        await websocket.close(code=1008, reason="Policy violation: invalid encryption/HMAC")
+                    finally:
+                        break
                 logger.debug(f"📥 Обработанное сообщение: {message}")
                 
                 # Обработка регистрации (особый случай)
@@ -183,6 +207,85 @@ class WebSocketHandler:
         
         logger.info(f"✅ Регистрация завершена для клиента {client_id}")
         return client_id
+
+    async def _send_ws_challenge(self, websocket: WebSocket, client_id: str):
+        """Отправка однократного WS challenge с nonce и timestamp (мягкий режим)."""
+        nonce = secrets.token_bytes(16)
+        ts = int(time.time())
+        challenge = {
+            "type": "auth_challenge",
+            "data": {
+                "nonce": base64.b64encode(nonce).decode("ascii"),
+                "ts": ts,
+                "alg": "HMAC-SHA256",
+                "hint": "sign: WS|/ws|<nonce_b64>|<ts>"
+            }
+        }
+        # Сохраняем ожидаемый challenge для клиента
+        meta = self.websocket_manager.get_metadata(client_id) or {}
+        meta['challenge'] = {"nonce": nonce, "ts": ts}
+        meta['challenge_verified'] = False
+        self.websocket_manager.update_metadata(client_id, meta)
+        enc = await self.encryption_service.encrypt_message(challenge, client_id)
+        await websocket.send_text(enc)
+
+    async def _handle_auth_challenge_response(self, websocket: WebSocket, message: dict, client_id: str):
+        """Проверка ответа на WS challenge. Мягкий режим: при неуспехе не разрываем соединение."""
+        try:
+            data = message.get('data', {})
+            sig_b64 = data.get('signature', '')
+            client_id_claim = data.get('client_id', client_id)
+            ts = int(data.get('ts', 0))
+            nonce_b64 = data.get('nonce', '')
+
+            meta = self.websocket_manager.get_metadata(client_id) or {}
+            ch = meta.get('challenge') or {}
+            expected_nonce = ch.get('nonce')
+            expected_ts = ch.get('ts')
+
+            if not sig_b64 or not expected_nonce or not expected_ts:
+                return
+
+            # Восстановим nonce
+            try:
+                recv_nonce = base64.b64decode(nonce_b64)
+            except Exception:
+                recv_nonce = b""
+
+            # Простая защита от отложенной реплики: окно 60с
+            now = int(time.time())
+            if abs(now - ts) > 60:
+                return
+
+            # Сверим nonce
+            if recv_nonce != expected_nonce or ts != expected_ts:
+                return
+
+            # Подготовим строку для подписи
+            signing_str = f"WS|/ws|{nonce_b64}|{ts}".encode('utf-8')
+
+            # Ключ для HMAC берём из сессионного ключа шифрования (PSK)
+            key = getattr(self.encryption_service, "_encryption_key", None)
+            if not key:
+                return
+
+            calc = compute_hmac(key, signing_str)
+            try:
+                recv_sig = base64.b64decode(sig_b64)
+            except Exception:
+                return
+            if _hmac.compare_digest(calc, recv_sig):
+                meta['challenge_verified'] = True
+                meta['client_id_claim'] = client_id_claim
+                self.websocket_manager.update_metadata(client_id, meta)
+                ack = {"type": "auth_challenge_ok"}
+            else:
+                ack = {"type": "auth_challenge_fail"}
+
+            enc = await self.encryption_service.encrypt_message(ack, client_id)
+            await websocket.send_text(enc)
+        except Exception as e:
+            logger.warning(f"Ошибка проверки WS challenge: {e}")
     
     async def _handle_auth(self, websocket: WebSocket, message: dict, client_id: str):
         """Обработка аутентификации с JWT токенами"""
