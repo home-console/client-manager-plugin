@@ -20,10 +20,29 @@ class FileTransferHandler:
             self.max_chunk_size = int(os.getenv("MAX_CHUNK_SIZE", str(1 << 22)))  # 4 MiB
         except Exception:
             self.max_chunk_size = 1 << 22
-        # DENY-LIST директорий: куда НЕЛЬЗЯ писать файлы (по умолчанию пусто — разрешено везде)
-        deny_paths = os.getenv("DENY_PATHS", "")
-        dirs = [p.strip() for p in deny_paths.split(",") if p.strip()]
-        self.denied_dirs = dirs
+        # Политики путей и лимитов настраиваются динамически сервисом (без ENV)
+        self.denied_dirs: list[str] = []  # по умолчанию пусто — запрещённых директорий нет
+        self.allowed_base_dir: str | None = None  # если задана — писать можно только внутри неё
+        # Лимиты
+        try:
+            self.max_transfer_size = int(os.getenv("MAX_TRANSFER_SIZE", "0")) or None  # bytes; None = без лимита
+        except Exception:
+            self.max_transfer_size = None
+        try:
+            self.per_client_quota_bytes = int(os.getenv("PER_CLIENT_QUOTA_BYTES", "0")) or None
+        except Exception:
+            self.per_client_quota_bytes = None
+
+    # ===== Политики, управляемые из сервиса =====
+    def set_denied_dirs(self, dirs: list[str]):
+        self.denied_dirs = [os.path.abspath(d) for d in dirs if d]
+
+    def set_allowed_base_dir(self, base_dir: str | None):
+        self.allowed_base_dir = os.path.abspath(base_dir) if base_dir else None
+
+    def set_limits(self, max_transfer_size: int | None = None, per_client_quota_bytes: int | None = None):
+        self.max_transfer_size = max_transfer_size
+        self.per_client_quota_bytes = per_client_quota_bytes
 
     async def handle_file_chunk(self, websocket: WebSocket, message: Dict[str, Any], client_id: str):
         data = message.get("data", {})
@@ -94,9 +113,27 @@ class FileTransferHandler:
                 await self.websocket_manager.send_message(client_id, encrypted)
                 return
         dest = t.get("dest_path") or f"/tmp/transfer_{transfer_id}.bin"
-        # Валидация пути (deny-list) с commonpath и нормализацией
+        # Валидация пути: allow-base-dir (если задан) и deny-list
         try:
             dest_real = os.path.realpath(dest)
+            # allow-base-dir
+            if self.allowed_base_dir:
+                base = os.path.realpath(self.allowed_base_dir)
+                common = os.path.commonpath([dest_real, base])
+                if (os.name == 'nt' and os.path.normcase(common) != os.path.normcase(base)) or (os.name != 'nt' and common != base):
+                    nack = {
+                        "type": "file_chunk_ack",
+                        "data": {
+                            "transfer_id": transfer_id,
+                            "chunk_index": chunk_index,
+                            "received": t.get("received", 0),
+                            "ok": False,
+                            "error": "path_not_in_allowed_base",
+                        },
+                    }
+                    encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+                    await self.websocket_manager.send_message(client_id, encrypted)
+                    return
             denied = False
             for d in self.denied_dirs:
                 base = os.path.realpath(d)
@@ -136,6 +173,63 @@ class FileTransferHandler:
                     "received": t.get("received", 0),
                     "ok": False,
                     "error": "path_validation_error",
+                },
+            }
+            encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+            await self.websocket_manager.send_message(client_id, encrypted)
+            return
+        
+        # Проверка лимитов размеров: per-transfer и per-client quota (до записи на диск)
+        try:
+            incoming_total = max(t.get("received", 0), offset + len(raw))
+            if self.max_transfer_size and incoming_total > self.max_transfer_size:
+                await self.transfers.set_state(transfer_id, TransferState.FAILED)
+                nack = {
+                    "type": "file_chunk_ack",
+                    "data": {
+                        "transfer_id": transfer_id,
+                        "chunk_index": chunk_index,
+                        "received": t.get("received", 0),
+                        "ok": False,
+                        "error": "transfer_size_limit_exceeded",
+                    },
+                }
+                encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+                await self.websocket_manager.send_message(client_id, encrypted)
+                return
+
+            if self.per_client_quota_bytes:
+                # Суммируем bytes_received по всем активным трансферам клиента
+                total_client_bytes = 0
+                for tid, st in self.transfers.transfers.items():
+                    if st.get("client_id") == client_id:
+                        total_client_bytes += int(st.get("bytes_received", 0))
+                if total_client_bytes + len(raw) > self.per_client_quota_bytes:
+                    await self.transfers.set_state(transfer_id, TransferState.FAILED)
+                    nack = {
+                        "type": "file_chunk_ack",
+                        "data": {
+                            "transfer_id": transfer_id,
+                            "chunk_index": chunk_index,
+                            "received": t.get("received", 0),
+                            "ok": False,
+                            "error": "client_quota_exceeded",
+                        },
+                    }
+                    encrypted = await self.encryption_service.encrypt_message(nack, client_id)
+                    await self.websocket_manager.send_message(client_id, encrypted)
+                    return
+        except Exception:
+            # Если проверка лимитов упала — безопасно отказываем
+            await self.transfers.set_state(transfer_id, TransferState.FAILED)
+            nack = {
+                "type": "file_chunk_ack",
+                "data": {
+                    "transfer_id": transfer_id,
+                    "chunk_index": chunk_index,
+                    "received": t.get("received", 0),
+                    "ok": False,
+                    "error": "limit_check_failed",
                 },
             }
             encrypted = await self.encryption_service.encrypt_message(nack, client_id)

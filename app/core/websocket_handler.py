@@ -3,20 +3,20 @@
 Объединяет лучшие практики из всех предыдущих версий
 """
 
-import asyncio
+# import asyncio
 import logging
 import time
-import os
+# import os
 import secrets
 import base64
 import hmac as _hmac
-import hashlib
+# import hashlib
 from typing import Optional, Dict, Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .connection.websocket_manager import WebSocketManager
 from .security.encryption_service import EncryptionService
-from .security.auth_service import AuthService
+# from .security.auth_service import AuthService
 from .messaging.message_router import MessageRouter
 from .client_manager import ClientManager
 from .command_handler import CommandHandler
@@ -24,6 +24,7 @@ from .models import ClientInfo
 from .transfers_manager import TransfersManager
 from .file_transfer_handler import FileTransferHandler
 from app.utils.encryption import compute_hmac
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +36,26 @@ class WebSocketHandler:
         # Инициализация модулей
         self.websocket_manager = WebSocketManager()
         self.encryption_service = EncryptionService()
-        self.auth_service = AuthService()
+        # self.auth_service = AuthService()
         self.message_router = MessageRouter()
         self.client_manager = ClientManager()
         self.command_handler = CommandHandler(self.client_manager, self.websocket_manager)
         self.transfers = TransfersManager()
         self.file_handler = FileTransferHandler(self.transfers, self.websocket_manager, self.encryption_service)
+        # Лимиты WS
+        self.ws_max_message_bytes = getattr(settings, "websocket_max_message_bytes", 1024 * 1024)
+        self.ws_max_messages_per_minute = getattr(settings, "websocket_max_messages_per_minute", 600)
+        self._msg_counters: Dict[str, Dict[str, float]] = {}
+        # Инициализация политик файловых трансферов из конфига
+        try:
+            if getattr(settings, "file_allowed_base_dir", None):
+                self.file_handler.set_allowed_base_dir(settings.file_allowed_base_dir)
+            self.file_handler.set_limits(
+                max_transfer_size=getattr(settings, "file_max_transfer_size", None),
+                per_client_quota_bytes=getattr(settings, "file_per_client_quota_bytes", None),
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось применить политики файловых трансферов из конфига: {e}")
         
         # Регистрация обработчиков сообщений
         self._register_handlers()
@@ -93,6 +108,9 @@ class WebSocketHandler:
         # Обработчик key_exchange (игнорируем в PSK режиме)
         self.message_router.register_handler('key_exchange', self._handle_key_exchange)
         
+        # Обработчик запроса TLS downgrade
+        self.message_router.register_handler('tls_downgrade_request', self._handle_tls_downgrade_request)
+        
         logger.info("✅ Все обработчики сообщений зарегистрированы")
     
     def _register_middleware(self):
@@ -123,6 +141,26 @@ class WebSocketHandler:
                 # Получение сообщения
                 data = await websocket.receive_text()
                 logger.debug(f"📥 Получено сообщение от {client_id}: {len(data)} байт")
+                # Проверка размера сообщения
+                if self.ws_max_message_bytes and len(data.encode('utf-8')) > self.ws_max_message_bytes:
+                    logger.warning(f"🔒 Закрытие {client_id}: превышен размер сообщения")
+                    try:
+                        await websocket.close(code=1009, reason="Message too big")
+                    finally:
+                        break
+                # Проверка частоты сообщений (скользящее окно 60с)
+                now = time.time()
+                ctr = self._msg_counters.get(client_id) or {"count": 0.0, "window_start": now}
+                if now - ctr["window_start"] >= 60:
+                    ctr = {"count": 0.0, "window_start": now}
+                ctr["count"] += 1
+                self._msg_counters[client_id] = ctr
+                if self.ws_max_messages_per_minute and ctr["count"] > float(self.ws_max_messages_per_minute):
+                    logger.warning(f"🔒 Закрытие {client_id}: превышен лимит сообщений в минуту")
+                    try:
+                        await websocket.close(code=1011, reason="Rate limit exceeded")
+                    finally:
+                        break
                 
                 # Дешифрование и маршрутизация
                 try:
@@ -310,6 +348,20 @@ class WebSocketHandler:
             token_client_id = payload.get('client_id')
             permissions = payload.get('permissions', [])
             
+            # Сверяем client_id из токена с текущим client_id соединения (после регистрации)
+            registered = (self.websocket_manager.get_metadata(client_id) or {}).get('registered')
+            if registered and token_client_id and token_client_id != client_id:
+                logger.warning(f"⚠️ Несоответствие client_id: токен для {token_client_id}, соединение {client_id}")
+                response = {
+                    "type": "auth_failed",
+                    "message": "Несоответствие client_id в токене"
+                }
+                encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
+                await websocket.send_text(encrypted_response)
+                # Закрываем соединение как нарушение политики
+                await websocket.close(code=1008, reason="Client ID mismatch in token")
+                return
+            
             # Сохраняем разрешения для клиента
             for permission in permissions:
                 self.auth_service.add_permission(client_id, permission)
@@ -343,6 +395,62 @@ class WebSocketHandler:
         
         encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
         await websocket.send_text(encrypted_response)
+    
+    async def _handle_tls_downgrade_request(self, websocket: WebSocket, message: dict, client_id: str):
+        """Обработка запроса на TLS downgrade от клиента"""
+        try:
+            data = message.get('data', {})
+            reason = data.get('reason', 'TLS connection failed')
+            tls_error = data.get('tls_error', '')
+            hostname = data.get('hostname', 'unknown')
+            
+            logger.warning(f"⚠️⚠️⚠️ TLS DOWNGRADE REQUEST от {client_id}")
+            logger.warning(f"  Hostname: {hostname}")
+            logger.warning(f"  Причина: {reason}")
+            logger.warning(f"  TLS ошибка: {tls_error}")
+            
+            # По умолчанию ЗАПРЕЩАЕМ откат в продакшене
+            # Администратор должен явно разрешить через конфиг или панель управления
+            allow_downgrade = getattr(settings, "allow_tls_downgrade", False)
+            
+            if allow_downgrade:
+                logger.warning(f"⚠️ TLS downgrade РАЗРЕШЕН для {client_id} (настройка allow_tls_downgrade=True)")
+                logger.warning(f"🔓 ВНИМАНИЕ: Соединение будет незащищенным!")
+                
+                response = {
+                    "type": "tls_downgrade_approved",
+                    "message": "TLS downgrade разрешен администратором",
+                    "data": {
+                        "warning": "Соединение будет НЕЗАЩИЩЕННЫМ! Все данные передаются в открытом виде.",
+                        "approved_by": "server_config",
+                        "timestamp": int(time.time())
+                    }
+                }
+                
+                # Помечаем клиента как использующего незащищенное соединение
+                meta = self.websocket_manager.get_metadata(client_id) or {}
+                meta['insecure_connection'] = True
+                meta['tls_downgrade_approved_at'] = time.time()
+                self.websocket_manager.update_metadata(client_id, meta)
+            else:
+                logger.error(f"❌ TLS downgrade ОТКЛОНЕН для {client_id}")
+                logger.error(f"💡 Для разрешения отката установите ALLOW_TLS_DOWNGRADE=true в конфиге")
+                
+                response = {
+                    "type": "tls_downgrade_denied",
+                    "message": "TLS downgrade запрещен политикой безопасности",
+                    "data": {
+                        "reason": "Server security policy denies TLS downgrade",
+                        "suggestion": "Исправьте TLS конфигурацию или обратитесь к администратору",
+                        "timestamp": int(time.time())
+                    }
+                }
+            
+            encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
+            await websocket.send_text(encrypted_response)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки TLS downgrade request: {e}")
     
     async def _stats_middleware(self, websocket: WebSocket, message: dict, client_id: str) -> dict:
         """Middleware для обновления статистики"""

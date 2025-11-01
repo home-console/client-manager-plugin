@@ -14,11 +14,13 @@ from app.utils.encryption import derive_key, encrypt_aes_gcm, decrypt_aes_gcm, c
 logger = logging.getLogger(__name__)
 
 
+
 class EncryptionService:
     """Сервис шифрования для E2E защиты"""
     
     def __init__(self, encryption_key: str = None, salt: bytes = None):
-        self.encryption_key = encryption_key or os.getenv("SERVER_ENCRYPTION_KEY", "my-super-secret-encryption-key-2025")
+        # Ключ шифрования обязателен: без него работа запрещена
+        self.encryption_key = encryption_key or os.getenv("SERVER_ENCRYPTION_KEY")
         salt_env = os.getenv("SERVER_ENCRYPTION_SALT")
         if salt is not None:
             self.salt = salt
@@ -29,12 +31,12 @@ class EncryptionService:
             except Exception:
                 self.salt = salt_env.encode("utf-8")
         else:
-            self.salt = b"remote-client-salt"
+            self.salt = None
         
-        if self.encryption_key:
-            self._encryption_key = derive_key(self.encryption_key, self.salt)
-        else:
-            self._encryption_key = None
+        if not self.encryption_key or not self.salt:
+            raise RuntimeError("SERVER_ENCRYPTION_KEY and SERVER_ENCRYPTION_SALT must be set for EncryptionService")
+        
+        self._encryption_key = derive_key(self.encryption_key, self.salt)
         
         # Состояние шифрования для каждого клиента
         self.encryption_states: Dict[str, Dict[str, int]] = {}

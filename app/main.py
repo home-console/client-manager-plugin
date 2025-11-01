@@ -9,8 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from .core.websocket_handler import WebSocketHandler
 from .dependencies import set_websocket_handler, get_websocket_handler
 from .routes import clients, commands, health, files
-from .config import settings
+from .config import settings, init_settings
 from .utils.structured_logger import setup_logging, get_logger, LoggingMiddleware
+
+# Явная инициализация настроек один раз при запуске приложения
+init_settings()
 
 # Настройка structured logging
 setup_logging(

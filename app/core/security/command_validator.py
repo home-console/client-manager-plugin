@@ -76,11 +76,8 @@ class CommandValidator:
                 "tar", "gzip", "gunzip", "zip", "unzip",
                 "bzip2", "bunzip2", "xz", "unxz",
                 
-                # Сетевые команды
+                # Сетевые команды (разрешаем базовые загрузки без пайпа в shell)
                 "curl", "wget", "scp", "rsync",
-                
-                # Мониторинг
-                "tcpdump", "netcat", "nc", "telnet",
             },
             
             CommandSecurityLevel.DANGEROUS: {
@@ -95,7 +92,10 @@ class CommandValidator:
                 
                 # Управление сервисами
                 "systemctl", "service", "initctl",
-
+                
+                # Сетевые универсальные утилиты (опасные по умолчанию)
+                "nc", "netcat", "telnet",
+                
                 # Windows dangerous
                 "taskkill", "sc", "net", "powershell",
             },

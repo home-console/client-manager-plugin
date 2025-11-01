@@ -14,8 +14,6 @@ from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
 
 class AuthService:
     """Сервис аутентификации"""
