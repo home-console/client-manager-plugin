@@ -47,6 +47,10 @@ class WebSocketHandler:
         from .secrets_sync import SecretsSyncService
         self.secrets_sync = SecretsSyncService(self.encryption_service)
         self.secrets_sync.set_websocket_handler(self)
+        
+        # Безопасный обмен ключами для первоначальной синхронизации
+        from .security.key_exchange import KeyExchangeService
+        self.key_exchange = KeyExchangeService()
         # Лимиты WS
         self.ws_max_message_bytes = getattr(settings, "websocket_max_message_bytes", 1024 * 1024)
         self.ws_max_messages_per_minute = getattr(settings, "websocket_max_messages_per_minute", 600)
@@ -110,8 +114,10 @@ class WebSocketHandler:
         # Обработчик ответа на WS challenge (мягкий режим)
         self.message_router.register_handler('auth_challenge_response', self._handle_auth_challenge_response)
         
-        # Обработчик key_exchange (игнорируем в PSK режиме)
+        # Обработчик key_exchange для безопасной передачи секретов
         self.message_router.register_handler('key_exchange', self._handle_key_exchange)
+        # Обработчик запроса секретов с публичным ключом
+        self.message_router.register_handler('request_secrets', self._handle_request_secrets)
         
         # Обработчик запроса TLS downgrade
         self.message_router.register_handler('tls_downgrade_request', self._handle_tls_downgrade_request)
@@ -165,50 +171,88 @@ class WebSocketHandler:
                         break
                 
                 # Дешифрование и маршрутизация
+                # ПЕРВОЕ: проверяем незашифрованные сообщения для безопасного обмена ключами
+                try:
+                    # Пробуем распарсить как JSON (возможно незашифрованное сообщение)
+                    import json
+                    try_json = json.loads(data)
+                    
+                    # Обработка незашифрованного request_secrets
+                    if isinstance(try_json, dict) and try_json.get("type") == "request_secrets":
+                        # Это безопасный запрос секретов - обрабатываем без дешифрования
+                        logger.info(f"🔐 Получен безопасный запрос секретов от {client_id}")
+                        await self._handle_request_secrets(websocket, try_json, client_id)
+                        break  # Соединение закроется после отправки секретов
+                    
+                    # Обработка незашифрованного register (для первоначальной синхронизации)
+                    elif isinstance(try_json, dict) and try_json.get("type") == "register":
+                        # Незашифрованная регистрация - это нормально для первоначальной синхронизации
+                        logger.info(f"📝 Получена незашифрованная регистрация от {client_id} (первоначальная синхронизация)")
+                        # Обрабатываем регистрацию напрямую
+                        new_client_id = await self._handle_registration(websocket, try_json, skip_secrets_send=True)
+                        if new_client_id != "unknown":
+                            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обновляем client_id ДО отправки сообщений
+                            await self.websocket_manager.update_client_id(client_id, new_client_id)
+                            client_id = new_client_id
+                            self.websocket_manager.update_metadata(client_id, {
+                                'registered': True,
+                                'registered_at': time.time()
+                            })
+                            
+                            # Запускаем мониторинг соединения после регистрации
+                            await self.websocket_manager.start_monitoring(client_id)
+                            
+                            # После регистрации отправляем secrets_needed для синхронизации секретов
+                            logger.info(f"🔐 Отправка secrets_needed для синхронизации секретов клиента {client_id}")
+                            secrets_needed_msg = {
+                                "type": "secrets_needed",
+                                "message": "Требуется синхронизация секретов. Отправьте незашифрованное сообщение 'request_secrets' с вашим публичным RSA ключом (PEM формат) в поле 'data.public_key'."
+                            }
+                            try:
+                                await websocket.send_text(json.dumps(secrets_needed_msg))
+                                logger.debug(f"✅ secrets_needed отправлено клиенту {client_id}")
+                            except Exception as e:
+                                logger.error(f"❌ Ошибка отправки secrets_needed клиенту {client_id}: {e}")
+                            
+                            # Продолжаем ожидание request_secrets (НЕ закрываем соединение)
+                            continue
+                        else:
+                            logger.warning(f"⚠️ Регистрация не удалась для {client_id}")
+                            break
+                except (json.JSONDecodeError, ValueError, KeyError):
+                    # Не JSON или не ожидаемый тип - продолжаем обычную обработку
+                    pass
+                
+                # ОБЫЧНАЯ ОБРАБОТКА: дешифрование и маршрутизация
                 try:
                     message = await self.encryption_service.decrypt_message(data, client_id)
                 except Exception as sec_err:
-                    # Специальная обработка для первого подключения с неверными ключами
-                    if client_id == "unknown" and ("HMAC mismatch" in str(sec_err) or "Unencrypted WebSocket message" in str(sec_err)):
+                    # БЕЗОПАСНАЯ ОБРАБОТКА первого подключения с неверными ключами
+                    # Вместо незашифрованной отправки - ожидаем запрос с публичным ключом
+                    error_msg = str(sec_err)
+                    is_hmac_error = "HMAC mismatch" in error_msg or "Unencrypted WebSocket message" in error_msg
+                    
+                    if client_id == "unknown" and is_hmac_error:
                         logger.warning(f"⚠️ HMAC mismatch при первом подключении - клиент использует неверные ключи")
-                        logger.info(f"🔐 Отправка секретов в незашифрованном виде для синхронизации")
+                        logger.info(f"🔐 Ожидаем запрос секретов с публичным ключом для безопасной передачи")
+                        
+                        # Отправляем сообщение с инструкцией запросить секреты через request_secrets
+                        error_response = {
+                            "type": "secrets_needed",
+                            "message": "Требуется синхронизация секретов. Отправьте незашифрованное сообщение 'request_secrets' с вашим публичным RSA ключом (PEM формат) в поле 'data.public_key'."
+                        }
                         try:
-                            # Отправляем секреты ПЕРЕД закрытием соединения
-                            logger.debug("Попытка отправить незашифрованные секреты...")
-                            await self._send_secrets_unencrypted(websocket)
-                            logger.info("✅ Секреты отправлены, ожидаем переподключение клиента с новыми ключами")
-                            # Небольшая задержка чтобы убедиться что сообщение отправлено
-                            import asyncio
-                            await asyncio.sleep(0.2)  # Увеличена задержка
-                        except Exception as sync_err:
-                            logger.error(f"❌ Ошибка отправки секретов: {sync_err}", exc_info=True)
-                            # Пробуем еще раз отправку с более детальным логированием
-                            try:
-                                logger.debug(f"Попытка повторной отправки секретов...")
-                                secrets = self.secrets_sync.get_current_secrets()
-                                logger.debug(f"Секреты для отправки: версия={secrets.get('version')}, ключ_длина={len(secrets.get('encryption_key', ''))}")
-                                message = {
-                                    "type": "secrets_config",
-                                    "data": secrets,
-                                    "unencrypted": True
-                                }
-                                import json
-                                json_data = json.dumps(message)
-                                logger.debug(f"JSON размер: {len(json_data)} байт")
-                                await websocket.send_text(json_data)
-                                logger.info("✅ Повторная отправка секретов успешна")
-                            except Exception as retry_err:
-                                logger.error(f"❌ Повторная попытка отправки тоже не удалась: {retry_err}", exc_info=True)
-                        finally:
-                            # Закрываем соединение в finally блоке
-                            try:
-                                await websocket.close(code=1000, reason="Secrets sent, please reconnect")
-                                logger.debug("Соединение закрыто после отправки секретов")
-                            except Exception as close_err:
-                                logger.debug(f"Соединение уже закрыто или ошибка закрытия: {close_err}")
-                        break
+                            import json
+                            await websocket.send_text(json.dumps(error_response))
+                            await asyncio.sleep(0.1)
+                        except Exception:
+                            pass
+                        
+                        # НЕ закрываем соединение сразу - даем возможность клиенту запросить секреты
+                        # Соединение закроется автоматически если клиент не отправит запрос
+                        continue
                     else:
-                        # Немедленно закрываем соединение при провале дешифрования/HMAC/формата
+                        # Немедленно закрываем соединение при других ошибках безопасности
                         reason = f"Security error: {sec_err}"
                         logger.warning(f"🔒 Отклонено сообщение и закрыто соединение {client_id}: {reason}")
                         try:
@@ -245,17 +289,26 @@ class WebSocketHandler:
             logger.error(f"❌ Ошибка WebSocket: {e}", exc_info=True)
         finally:
             if client_id != "unknown":
-                # Помечаем все трансферы клиента на паузу при отключении
+                # Помечаем все трансферы клиента на паузу при отключении (только если есть активные)
                 try:
-                    paused = self.transfers.pause_all_for_client(client_id)
-                    logger.info(f"⏸️ Поставлено на паузу трансферов: {paused} для клиента {client_id}")
+                    paused_count = await self.transfers.pause_all_for_client(client_id)
+                    # Логируем только если действительно что-то приостановили
+                    if paused_count > 0:
+                        logger.debug(f"⏸️ Приостановлено активных трансферов: {paused_count} для клиента {client_id}")
                 except Exception as e:
                     logger.error(f"❌ Ошибка паузы трансферов для {client_id}: {e}")
                 await self._cleanup_client(client_id)
             self.stats["active_connections"] -= 1
     
-    async def _handle_registration(self, websocket: WebSocket, message: dict) -> str:
-        """Обработка регистрации клиента"""
+    async def _handle_registration(self, websocket: WebSocket, message: dict, skip_secrets_send: bool = False) -> str:
+        """
+        Обработка регистрации клиента
+        
+        Args:
+            websocket: WebSocket соединение
+            message: Сообщение регистрации
+            skip_secrets_send: Если True, не отправляет секреты (для первоначальной синхронизации через RSA)
+        """
         # Регистрируем клиента
         client_id = await self.client_manager.register_client(websocket, message.get('data', {}))
         
@@ -270,68 +323,141 @@ class WebSocketHandler:
         
         logger.info(f"📋 Регистрация клиента {client_id}: версия секретов клиента={client_secrets_version}, сервера={server_secrets_version}")
         
-        # Если версия устарела или отсутствует - отправляем секреты
-        if client_secrets_version < server_secrets_version:
+        # Если версия устарела или отсутствует - отправляем секреты (только если не пропущено)
+        if not skip_secrets_send and client_secrets_version < server_secrets_version:
             logger.info(f"🔄 Клиент {client_id} имеет устаревшую версию секретов, отправляем обновление")
             try:
                 await self.secrets_sync.send_secrets_to_client(client_id)
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки секретов клиенту {client_id}: {e}")
         
-        # Отправляем подтверждение с информацией о версии секретов
-        response = {
-            "type": "registration_success",
-            "client_id": client_id,
-            "message": "Клиент успешно зарегистрирован",
-            "server_info": {
-                "version": "2.0.0",
-                "features": ["commands", "file_ops", "monitoring", "encryption", "secrets_sync"],
-                "max_command_timeout": 300,
-                "max_output_size": "10MB"
-            },
-            "secrets_version": server_secrets_version  # Информируем клиента о версии
-        }
-        
-        # Шифруем и отправляем ответ
-        encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
-        
-        # Проверяем, что соединение еще активно
-        try:
-            await websocket.send_text(encrypted_response)
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки ответа регистрации: {e}")
-            return client_id  # Возвращаем client_id даже если не удалось отправить ответ
-        
-        logger.info(f"✅ Регистрация завершена для клиента {client_id}")
-        return client_id
-    
-    async def _send_secrets_unencrypted(self, websocket: WebSocket):
-        """Отправка секретов в незашифрованном виде для синхронизации при первом подключении"""
-        try:
-            secrets = self.secrets_sync.get_current_secrets()
-            logger.debug(f"Подготовка незашифрованных секретов: версия={secrets.get('version')}")
-            
-            # Проверяем, что секреты валидны
-            if not secrets.get('encryption_key') or not secrets.get('encryption_salt'):
-                raise ValueError("Секреты не валидны: отсутствует encryption_key или encryption_salt")
-            
-            message = {
-                "type": "secrets_config",
-                "data": secrets,
-                "unencrypted": True  # Флаг что сообщение не зашифровано (для начальной синхронизации)
+        # Отправляем подтверждение с информацией о версии секретов (только если не пропущено)
+        if not skip_secrets_send:
+            response = {
+                "type": "registration_success",
+                "client_id": client_id,
+                "message": "Клиент успешно зарегистрирован",
+                "server_info": {
+                    "version": "2.0.0",
+                    "features": ["commands", "file_ops", "monitoring", "encryption", "secrets_sync"],
+                    "max_command_timeout": 300,
+                    "max_output_size": "10MB"
+                },
+                "secrets_version": server_secrets_version  # Информируем клиента о версии
             }
             
-            # Отправляем как обычный JSON (незашифрованный)
-            import json
-            json_str = json.dumps(message)
-            logger.debug(f"Отправка незашифрованного JSON: {len(json_str)} байт")
-            logger.debug(f"Первые 200 символов: {json_str[:200]}")
+            # Шифруем и отправляем ответ
+            encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
             
-            await websocket.send_text(json_str)
-            logger.info(f"✅ Секреты отправлены незашифрованными для синхронизации (версия {secrets['version']})")
+            # Проверяем, что соединение еще активно
+            try:
+                await websocket.send_text(encrypted_response)
+                logger.info(f"✅ Регистрация завершена для клиента {client_id}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки ответа регистрации: {e}")
+                return client_id  # Возвращаем client_id даже если не удалось отправить ответ
+        else:
+            # Если skip_secrets_send=True, ответ будет отправлен в handle_websocket как secrets_needed
+            logger.info(f"✅ Регистрация завершена для клиента {client_id} (пропущена отправка секретов, ожидаем RSA обмен)")
+        
+        return client_id
+    
+    async def _handle_request_secrets(self, websocket: WebSocket, message: dict, client_id: str):
+        """
+        БЕЗОПАСНЫЙ обмен секретами с использованием RSA шифрования
+        
+        Клиент отправляет свой публичный RSA ключ, сервер шифрует секреты этим ключом.
+        """
+        try:
+            data = message.get('data', {})
+            public_key_pem = data.get('public_key')
+            
+            if not public_key_pem:
+                error_response = {
+                    "type": "secrets_error",
+                    "error": "Публичный ключ не предоставлен",
+                    "message": "Отправьте публичный RSA ключ в формате PEM в поле 'public_key'"
+                }
+                import json
+                await websocket.send_text(json.dumps(error_response))
+                return
+            
+            # Регистрируем публичный ключ клиента
+            if not self.key_exchange.register_client_public_key(client_id, public_key_pem):
+                error_response = {
+                    "type": "secrets_error",
+                    "error": "Неверный формат публичного ключа",
+                    "message": "Публичный ключ должен быть в формате PEM (RSA)"
+                }
+                import json
+                await websocket.send_text(json.dumps(error_response))
+                return
+            
+            # Получаем текущие секреты
+            secrets = self.secrets_sync.get_current_secrets()
+            if not secrets.get('encryption_key') or not secrets.get('encryption_salt'):
+                error_response = {
+                    "type": "secrets_error",
+                    "error": "Секреты не настроены на сервере",
+                    "message": "Обратитесь к администратору для настройки SERVER_ENCRYPTION_KEY и SERVER_ENCRYPTION_SALT"
+                }
+                import json
+                await websocket.send_text(json.dumps(error_response))
+                return
+            
+            # Шифруем секреты публичным ключом клиента
+            encrypted_secrets = self.key_exchange.encrypt_secrets_for_client(client_id, secrets)
+            if not encrypted_secrets:
+                error_response = {
+                    "type": "secrets_error",
+                    "error": "Ошибка шифрования секретов",
+                    "message": "Не удалось зашифровать секреты публичным ключом клиента"
+                }
+                import json
+                await websocket.send_text(json.dumps(error_response))
+                return
+            
+            # Отправляем зашифрованные секреты
+            response = {
+                "type": "secrets_config",
+                "data": {
+                    "encrypted_secrets": encrypted_secrets,
+                    "encryption": "RSA-OAEP-SHA256",  # Указываем алгоритм для клиента (в data)
+                    "version": secrets.get("version"),
+                    "timestamp": secrets.get("timestamp")
+                }
+            }
+            
+            import json
+            json_response = json.dumps(response)
+            
+            try:
+                await websocket.send_text(json_response)
+                logger.info(f"✅ Секреты безопасно отправлены клиенту {client_id} (зашифрованы RSA, версия {secrets.get('version')})")
+                logger.info(f"   Клиент должен расшифровать секреты своим приватным ключом и переподключиться")
+                
+                # Даем время клиенту получить и обработать секреты
+                await asyncio.sleep(0.5)
+            except Exception as send_err:
+                logger.error(f"❌ Ошибка отправки зашифрованных секретов клиенту {client_id}: {send_err}")
+                return
+            
+            # НЕ закрываем соединение сразу - клиент сам закроет после получения секретов
+            # или соединение закроется при переподключении
+            logger.debug(f"✅ Зашифрованные секреты отправлены, ожидаем переподключение клиента {client_id}")
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка в _send_secrets_unencrypted: {e}", exc_info=True)
-            raise
+            logger.error(f"❌ Ошибка обработки запроса секретов от {client_id}: {e}", exc_info=True)
+            try:
+                error_response = {
+                    "type": "secrets_error",
+                    "error": "Внутренняя ошибка сервера",
+                    "message": str(e)
+                }
+                import json
+                await websocket.send_text(json.dumps(error_response))
+            except:
+                pass
 
     async def _send_ws_challenge(self, websocket: WebSocket, client_id: str):
         """Отправка однократного WS challenge с nonce и timestamp (мягкий режим)."""
