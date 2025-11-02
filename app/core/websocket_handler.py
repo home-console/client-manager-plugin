@@ -1,9 +1,9 @@
-"""
+cle"""
 Единый WebSocket обработчик с улучшенной архитектурой
 Объединяет лучшие практики из всех предыдущих версий
 """
 
-# import asyncio
+import asyncio
 import logging
 import time
 # import os
@@ -42,6 +42,11 @@ class WebSocketHandler:
         self.command_handler = CommandHandler(self.client_manager, self.websocket_manager)
         self.transfers = TransfersManager()
         self.file_handler = FileTransferHandler(self.transfers, self.websocket_manager, self.encryption_service)
+        
+        # Синхронизация секретов (websocket_handler передается после инициализации)
+        from .secrets_sync import SecretsSyncService
+        self.secrets_sync = SecretsSyncService(self.encryption_service)
+        self.secrets_sync.set_websocket_handler(self)
         # Лимиты WS
         self.ws_max_message_bytes = getattr(settings, "websocket_max_message_bytes", 1024 * 1024)
         self.ws_max_messages_per_minute = getattr(settings, "websocket_max_messages_per_minute", 600)
@@ -130,12 +135,9 @@ class WebSocketHandler:
             self.stats["total_connections"] += 1
             self.stats["active_connections"] += 1
             
-            # Отправляем WS challenge (мягкий режим)
-            try:
-                await self._send_ws_challenge(websocket, client_id)
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось отправить WS challenge: {e}")
-
+            # НЕ отправляем WS challenge сразу - сначала ждем регистрацию
+            # Если регистрация не удастся из-за HMAC mismatch, отправим secrets_config вместо challenge
+            
             # Основной цикл обработки сообщений
             while True:
                 # Получение сообщения
@@ -166,12 +168,53 @@ class WebSocketHandler:
                 try:
                     message = await self.encryption_service.decrypt_message(data, client_id)
                 except Exception as sec_err:
-                    # Немедленно закрываем соединение при провале дешифрования/HMAC/формата
-                    reason = f"Security error: {sec_err}"
-                    logger.warning(f"🔒 Отклонено сообщение и закрыто соединение {client_id}: {reason}")
-                    try:
-                        await websocket.close(code=1008, reason="Policy violation: invalid encryption/HMAC")
-                    finally:
+                    # Специальная обработка для первого подключения с неверными ключами
+                    if client_id == "unknown" and ("HMAC mismatch" in str(sec_err) or "Unencrypted WebSocket message" in str(sec_err)):
+                        logger.warning(f"⚠️ HMAC mismatch при первом подключении - клиент использует неверные ключи")
+                        logger.info(f"🔐 Отправка секретов в незашифрованном виде для синхронизации")
+                        try:
+                            # Отправляем секреты ПЕРЕД закрытием соединения
+                            logger.debug("Попытка отправить незашифрованные секреты...")
+                            await self._send_secrets_unencrypted(websocket)
+                            logger.info("✅ Секреты отправлены, ожидаем переподключение клиента с новыми ключами")
+                            # Небольшая задержка чтобы убедиться что сообщение отправлено
+                            import asyncio
+                            await asyncio.sleep(0.2)  # Увеличена задержка
+                        except Exception as sync_err:
+                            logger.error(f"❌ Ошибка отправки секретов: {sync_err}", exc_info=True)
+                            # Пробуем еще раз отправку с более детальным логированием
+                            try:
+                                logger.debug(f"Попытка повторной отправки секретов...")
+                                secrets = self.secrets_sync.get_current_secrets()
+                                logger.debug(f"Секреты для отправки: версия={secrets.get('version')}, ключ_длина={len(secrets.get('encryption_key', ''))}")
+                                message = {
+                                    "type": "secrets_config",
+                                    "data": secrets,
+                                    "unencrypted": True
+                                }
+                                import json
+                                json_data = json.dumps(message)
+                                logger.debug(f"JSON размер: {len(json_data)} байт")
+                                await websocket.send_text(json_data)
+                                logger.info("✅ Повторная отправка секретов успешна")
+                            except Exception as retry_err:
+                                logger.error(f"❌ Повторная попытка отправки тоже не удалась: {retry_err}", exc_info=True)
+                        finally:
+                            # Закрываем соединение в finally блоке
+                            try:
+                                await websocket.close(code=1000, reason="Secrets sent, please reconnect")
+                                logger.debug("Соединение закрыто после отправки секретов")
+                            except Exception as close_err:
+                                logger.debug(f"Соединение уже закрыто или ошибка закрытия: {close_err}")
+                        break
+                    else:
+                        # Немедленно закрываем соединение при провале дешифрования/HMAC/формата
+                        reason = f"Security error: {sec_err}"
+                        logger.warning(f"🔒 Отклонено сообщение и закрыто соединение {client_id}: {reason}")
+                        try:
+                            await websocket.close(code=1008, reason="Policy violation: invalid encryption/HMAC")
+                        except:
+                            pass
                         break
                 logger.debug(f"📥 Обработанное сообщение: {message}")
                 
@@ -220,17 +263,33 @@ class WebSocketHandler:
         if client_id in self.encryption_service.encryption_states:
             self.encryption_service.reset_encryption_state(client_id)
         
-        # Отправляем подтверждение
+        # Проверяем версию секретов клиента
+        client_data = message.get('data', {})
+        client_secrets_version = client_data.get('secrets_version', 0)
+        server_secrets_version = self.secrets_sync.get_version()
+        
+        logger.info(f"📋 Регистрация клиента {client_id}: версия секретов клиента={client_secrets_version}, сервера={server_secrets_version}")
+        
+        # Если версия устарела или отсутствует - отправляем секреты
+        if client_secrets_version < server_secrets_version:
+            logger.info(f"🔄 Клиент {client_id} имеет устаревшую версию секретов, отправляем обновление")
+            try:
+                await self.secrets_sync.send_secrets_to_client(client_id)
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки секретов клиенту {client_id}: {e}")
+        
+        # Отправляем подтверждение с информацией о версии секретов
         response = {
             "type": "registration_success",
             "client_id": client_id,
             "message": "Клиент успешно зарегистрирован",
             "server_info": {
                 "version": "2.0.0",
-                "features": ["commands", "file_ops", "monitoring", "encryption"],
+                "features": ["commands", "file_ops", "monitoring", "encryption", "secrets_sync"],
                 "max_command_timeout": 300,
                 "max_output_size": "10MB"
-            }
+            },
+            "secrets_version": server_secrets_version  # Информируем клиента о версии
         }
         
         # Шифруем и отправляем ответ
@@ -245,6 +304,34 @@ class WebSocketHandler:
         
         logger.info(f"✅ Регистрация завершена для клиента {client_id}")
         return client_id
+    
+    async def _send_secrets_unencrypted(self, websocket: WebSocket):
+        """Отправка секретов в незашифрованном виде для синхронизации при первом подключении"""
+        try:
+            secrets = self.secrets_sync.get_current_secrets()
+            logger.debug(f"Подготовка незашифрованных секретов: версия={secrets.get('version')}")
+            
+            # Проверяем, что секреты валидны
+            if not secrets.get('encryption_key') or not secrets.get('encryption_salt'):
+                raise ValueError("Секреты не валидны: отсутствует encryption_key или encryption_salt")
+            
+            message = {
+                "type": "secrets_config",
+                "data": secrets,
+                "unencrypted": True  # Флаг что сообщение не зашифровано (для начальной синхронизации)
+            }
+            
+            # Отправляем как обычный JSON (незашифрованный)
+            import json
+            json_str = json.dumps(message)
+            logger.debug(f"Отправка незашифрованного JSON: {len(json_str)} байт")
+            logger.debug(f"Первые 200 символов: {json_str[:200]}")
+            
+            await websocket.send_text(json_str)
+            logger.info(f"✅ Секреты отправлены незашифрованными для синхронизации (версия {secrets['version']})")
+        except Exception as e:
+            logger.error(f"❌ Ошибка в _send_secrets_unencrypted: {e}", exc_info=True)
+            raise
 
     async def _send_ws_challenge(self, websocket: WebSocket, client_id: str):
         """Отправка однократного WS challenge с nonce и timestamp (мягкий режим)."""

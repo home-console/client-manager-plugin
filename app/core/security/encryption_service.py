@@ -144,6 +144,15 @@ class EncryptionService:
             del self.encryption_states[client_id]
             logger.debug(f"Очищены данные шифрования для клиента {client_id}")
     
+    def update_key(self, new_key: str, new_salt: bytes):
+        """Обновить ключ шифрования и соль (для ротации)"""
+        self.encryption_key = new_key
+        self.salt = new_salt
+        self._encryption_key = derive_key(new_key, new_salt)
+        # Очищаем состояния шифрования при смене ключа
+        self.encryption_states.clear()
+        logger.info("✅ Ключ шифрования обновлен, состояния сброшены")
+    
     def get_stats(self) -> dict:
         """Получить статистику шифрования"""
         return {
