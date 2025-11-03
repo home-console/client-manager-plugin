@@ -25,8 +25,10 @@ class WebSocketManager:
             self.active_connections[client_id] = websocket
             self.connection_metadata[client_id] = metadata or {}
             
-            # Запускаем задачу мониторинга соединения только для зарегистрированных клиентов
-            if client_id != "unknown":
+            # Запускаем мониторинг, если не отключен через переменную окружения
+            import os
+            monitor_disabled = os.getenv("WS_MONITOR_DISABLE", "false").lower() in ("1", "true", "yes")
+            if client_id != "unknown" and not monitor_disabled:
                 self.connection_tasks[client_id] = asyncio.create_task(
                     self._monitor_connection(client_id, websocket)
                 )
@@ -95,6 +97,10 @@ class WebSocketManager:
     
     async def start_monitoring(self, client_id: str):
         """Запустить мониторинг для зарегистрированного клиента"""
+        import os
+        monitor_disabled = os.getenv("WS_MONITOR_DISABLE", "false").lower() in ("1", "true", "yes")
+        if monitor_disabled:
+            return
         if client_id in self.active_connections and client_id not in self.connection_tasks:
             websocket = self.active_connections[client_id]
             self.connection_tasks[client_id] = asyncio.create_task(
@@ -123,6 +129,8 @@ class WebSocketManager:
     async def _monitor_connection(self, client_id: str, websocket: WebSocket):
         """Мониторинг соединения"""
         try:
+            # Даем времени на стабилизацию соединения после регистрации
+            await asyncio.sleep(5)
             while True:
                 # Проверяем, что соединение еще активно
                 if client_id not in self.active_connections:
@@ -133,7 +141,9 @@ class WebSocketManager:
                     await websocket.send_text('{"type": "ping"}')
                 except Exception as ping_error:
                     logger.debug(f"Ping failed for {client_id}: {ping_error}")
-                    break
+                    # Не рвем соединение моментально, попробуем позже
+                    await asyncio.sleep(5)
+                    continue
                 
                 await asyncio.sleep(30)  # Проверяем каждые 30 секунд
                 
@@ -142,7 +152,8 @@ class WebSocketManager:
         except Exception as e:
             logger.error(f"❌ Ошибка мониторинга соединения {client_id}: {e}")
         finally:
-            await self.disconnect(client_id)
+            # Не инициируем принудительное отключение здесь, пусть инициатором будет сторона, вызвавшая исключение
+            pass
     
     async def broadcast(self, message: str, exclude_clients: Set[str] = None):
         """Широковещательная отправка сообщения"""

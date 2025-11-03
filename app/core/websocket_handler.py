@@ -23,8 +23,8 @@ from .command_handler import CommandHandler
 from .models import ClientInfo
 from .transfers_manager import TransfersManager
 from .file_transfer_handler import FileTransferHandler
-from app.utils.encryption import compute_hmac
-from app.config import settings
+from ..utils.encryption import compute_hmac
+from ..config import settings
 from .enrollment_store import EnrollmentStore
 
 logger = logging.getLogger(__name__)
@@ -366,8 +366,73 @@ class WebSocketHandler:
                 logger.error(f"❌ Ошибка отправки ответа регистрации: {e}")
                 return client_id  # Возвращаем client_id даже если не удалось отправить ответ
         else:
-            # Если skip_secrets_send=True, работаем по TOFU: ожидаем approve администратора
+            # Если skip_secrets_send=True или клиент не trusted — работаем по TOFU
             logger.info(f"✅ Регистрация завершена для клиента {client_id} (TOFU pending)")
+            import os
+            auto_approve = os.getenv("AUTO_APPROVE_ENROLLMENTS", "false").lower() in ("1", "true", "yes")
+            if auto_approve:
+                try:
+                    # Мягкий автопрув для dev: сразу считаем клиента trusted
+                    self.enrollments.approve(client_id)
+                    server_ver = self.secrets_sync.get_version()
+                    # Если у клиента нет или устарела версия секретов — отправляем plaintext и подсказку
+                    if client_secrets_version < server_ver:
+                        response = {
+                            "type": "registration_success",
+                            "client_id": client_id,
+                            "message": "Клиент успешно зарегистрирован",
+                            "server_info": {
+                                "version": "2.0.0",
+                                "features": ["commands", "file_ops", "monitoring", "encryption", "secrets_sync"],
+                                "max_command_timeout": 300,
+                                "max_output_size": "10MB"
+                            },
+                            "secrets_version": server_ver
+                        }
+                        import json as _json
+                        try:
+                            await websocket.send_text(_json.dumps(response))
+                            # Подскажем клиенту инициировать безопасную синхронизацию секретов
+                            secrets_hint = {
+                                "type": "secrets_needed",
+                                "message": "Отправьте 'request_secrets' с вашим публичным RSA ключом (PEM) в data.public_key"
+                            }
+                            await websocket.send_text(_json.dumps(secrets_hint))
+                        except Exception:
+                            pass
+                    else:
+                        # Секреты актуальны — отправляем зашифрованный ответ как в trusted-ветке
+                        response = {
+                            "type": "registration_success",
+                            "client_id": client_id,
+                            "message": "Клиент успешно зарегистрирован",
+                            "server_info": {
+                                "version": "2.0.0",
+                                "features": ["commands", "file_ops", "monitoring", "encryption", "secrets_sync"],
+                                "max_command_timeout": 300,
+                                "max_output_size": "10MB"
+                            },
+                            "secrets_version": server_ver
+                        }
+                        enc_resp = await self.encryption_service.encrypt_message(response, client_id)
+                        try:
+                            await websocket.send_text(enc_resp)
+                        except Exception:
+                            pass
+                    logger.debug(f"AUTO_APPROVE: клиент {client_id} одобрен (client_ver={client_secrets_version}, server_ver={server_ver})")
+                except Exception as e:
+                    logger.warning(f"Не удалось автоодобрить {client_id}: {e}")
+            else:
+                # Уведомим клиента явным сообщением о pending
+                try:
+                    pending_msg = {
+                        "type": "enrollment_pending",
+                        "data": {"client_id": client_id}
+                    }
+                    enc = await self.encryption_service.encrypt_message(pending_msg, client_id)
+                    await websocket.send_text(enc)
+                except Exception:
+                    pass
         
         return client_id
 

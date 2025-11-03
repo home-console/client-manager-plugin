@@ -10,9 +10,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
 
-from app.core.websocket_handler import WebSocketHandler
-from app.dependencies import get_websocket_handler
-from app.config import get_settings
+from ..core.websocket_handler import WebSocketHandler
+from ..dependencies import get_websocket_handler
+from ..config import get_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/secrets", tags=["secrets"])
