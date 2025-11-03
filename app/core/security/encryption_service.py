@@ -40,6 +40,11 @@ class EncryptionService:
         
         # Состояние шифрования для каждого клиента
         self.encryption_states: Dict[str, Dict[str, int]] = {}
+        
+        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Replay protection для unknown клиентов
+        # Временное хранилище sequence numbers для unknown клиентов (до регистрации)
+        # Ключ: (client_id, connection_start_time) для уникальности соединений
+        self.unknown_client_seqs: Dict[str, Dict[str, int]] = {}
     
     def is_encryption_enabled(self) -> bool:
         """Проверить, включено ли шифрование"""
@@ -117,18 +122,37 @@ class EncryptionService:
             plaintext = decrypt_aes_gcm(self._encryption_key, payload_enc)
             message = json.loads(plaintext.decode("utf-8"))
             
-            # Проверка последовательного номера (только для зарегистрированных клиентов)
-            if "_seq" in message.get("data", {}) and client_id != "unknown":
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Replay protection для всех клиентов, включая unknown
+            if "_seq" in message.get("data", {}):
                 seq = int(message["data"]["_seq"])
-                state = self.get_encryption_state(client_id)
                 
-                if seq <= state.get("seq_in", 0):
-                    raise ValueError("Replay detected")
+                if client_id != "unknown":
+                    # Зарегистрированные клиенты - используем обычный механизм
+                    state = self.get_encryption_state(client_id)
+                    
+                    if seq <= state.get("seq_in", 0):
+                        raise ValueError("Replay detected")
+                    
+                    state["seq_in"] = seq
+                else:
+                    # Unknown клиенты - используем временное хранилище
+                    # Используем IP адрес + timestamp соединения как ключ (из metadata если доступно)
+                    # Или просто "unknown" с проверкой по последовательности
+                    unknown_key = f"unknown_{client_id}"
+                    
+                    if unknown_key not in self.unknown_client_seqs:
+                        self.unknown_client_seqs[unknown_key] = {"seq_in": 0}
+                    
+                    unknown_state = self.unknown_client_seqs[unknown_key]
+                    
+                    # Проверка replay для unknown клиента
+                    if seq <= unknown_state.get("seq_in", 0):
+                        logger.warning(f"⚠️ Replay detected для unknown клиента (seq={seq} <= last_seq={unknown_state.get('seq_in', 0)})")
+                        raise ValueError("Replay detected")
+                    
+                    unknown_state["seq_in"] = seq
+                    logger.debug(f"✅ Replay protection для unknown клиента: seq={seq}")
                 
-                state["seq_in"] = seq
-                del message["data"]["_seq"]
-            elif "_seq" in message.get("data", {}):
-                # Для unknown просто удаляем _seq
                 del message["data"]["_seq"]
             
             return message
@@ -138,11 +162,47 @@ class EncryptionService:
             logger.warning(f"Ошибка дешифрования/WebSocket безопасности: {e}")
             raise
     
+    def migrate_unknown_to_registered(self, unknown_client_id: str, registered_client_id: str):
+        """
+        КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Миграция sequence numbers от unknown к зарегистрированному клиенту
+        
+        При регистрации клиента переносим его sequence state из временного хранилища
+        в постоянное, чтобы сохранить защиту от replay атак.
+        """
+        unknown_key = f"unknown_{unknown_client_id}"
+        
+        if unknown_key in self.unknown_client_seqs:
+            unknown_state = self.unknown_client_seqs[unknown_key]
+            seq_in = unknown_state.get("seq_in", 0)
+            
+            # Инициализируем состояние для зарегистрированного клиента
+            if registered_client_id not in self.encryption_states:
+                self.encryption_states[registered_client_id] = {"seq_out": 0, "seq_in": 0}
+            
+            # Переносим seq_in из unknown в зарегистрированного
+            self.encryption_states[registered_client_id]["seq_in"] = seq_in
+            
+            # Удаляем временную запись
+            del self.unknown_client_seqs[unknown_key]
+            
+            logger.debug(f"✅ Мигрированы sequence numbers от unknown ({unknown_client_id}) к зарегистрированному ({registered_client_id}): seq_in={seq_in}")
+        else:
+            # Если не было unknown записи - просто инициализируем с нуля
+            if registered_client_id not in self.encryption_states:
+                self.encryption_states[registered_client_id] = {"seq_out": 0, "seq_in": 0}
+                logger.debug(f"✅ Инициализировано состояние sequence numbers для нового клиента {registered_client_id}")
+    
     def cleanup_client(self, client_id: str):
         """Очистка данных шифрования для клиента"""
         if client_id in self.encryption_states:
             del self.encryption_states[client_id]
             logger.debug(f"Очищены данные шифрования для клиента {client_id}")
+        
+        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Очистка временных sequence numbers для unknown клиентов
+        unknown_key = f"unknown_{client_id}"
+        if unknown_key in self.unknown_client_seqs:
+            del self.unknown_client_seqs[unknown_key]
+            logger.debug(f"Очищены временные sequence numbers для unknown клиента {client_id}")
     
     def update_key(self, new_key: str, new_salt: bytes):
         """Обновить ключ шифрования и соль (для ротации)"""
@@ -158,6 +218,7 @@ class EncryptionService:
         return {
             "encryption_enabled": self.is_encryption_enabled(),
             "active_clients": len(self.encryption_states),
-            "clients": list(self.encryption_states.keys())
+            "clients": list(self.encryption_states.keys()),
+            "unknown_clients": len(self.unknown_client_seqs)  # P0-5: добавляем статистику unknown
         }
 

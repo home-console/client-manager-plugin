@@ -262,13 +262,19 @@ class WebSocketHandler:
                         break
                 logger.debug(f"📥 Обработанное сообщение: {message}")
                 
-                # Обработка регистрации (особый случай)
+                    # Обработка регистрации (особый случай)
                 if message.get('type') == 'register':
                     # Обновляем client_id после регистрации
+                    old_client_id = client_id
                     new_client_id = await self._handle_registration(websocket, message)
                     if new_client_id != "unknown":
+                        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Переносим sequence numbers из unknown в зарегистрированного клиента
+                        if old_client_id == "unknown":
+                            # Переносим состояние sequence numbers из unknown в нового клиента
+                            self.encryption_service.migrate_unknown_to_registered(old_client_id, new_client_id)
+                        
                         # Обновляем client_id в WebSocketManager
-                        await self.websocket_manager.update_client_id(client_id, new_client_id)
+                        await self.websocket_manager.update_client_id(old_client_id, new_client_id)
                         client_id = new_client_id
                         
                         # Обновляем метаданные соединения
@@ -622,11 +628,23 @@ class WebSocketHandler:
             logger.warning(f"  Причина: {reason}")
             logger.warning(f"  TLS ошибка: {tls_error}")
             
-            # По умолчанию ЗАПРЕЩАЕМ откат в продакшене
-            # Администратор должен явно разрешить через конфиг или панель управления
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-4: TLS downgrade разрешен только администратором
+            # По умолчанию ЗАПРЕЩАЕМ, но администратор может явно разрешить через ALLOW_TLS_DOWNGRADE
             allow_downgrade = getattr(settings, "allow_tls_downgrade", False)
             
+            # Проверяем окружение для дополнительных предупреждений
+            import os
+            env = os.getenv("ENVIRONMENT", os.getenv("ENV", "production")).lower()
+            is_production = env in ("production", "prod", "live")
+            
             if allow_downgrade:
+                # КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ в production
+                if is_production:
+                    logger.critical(f"🔴 КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ: TLS downgrade РАЗРЕШЕН в ПРОДАКШЕНЕ!")
+                    logger.critical(f"   Это создает серьезный риск безопасности!")
+                    logger.critical(f"   Убедитесь что это явное административное решение")
+                else:
+                    logger.warning(f"⚠️ TLS downgrade разрешен для разработки")
                 logger.warning(f"⚠️ TLS downgrade РАЗРЕШЕН для {client_id} (настройка allow_tls_downgrade=True)")
                 logger.warning(f"🔓 ВНИМАНИЕ: Соединение будет незащищенным!")
                 

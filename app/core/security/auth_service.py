@@ -25,6 +25,10 @@ class AuthService:
         self.algorithm = algorithm
         self.token_expire_minutes = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
         
+        # JWT claims для валидации
+        self.issuer = os.getenv("JWT_ISSUER", "remote-client-server")
+        self.audience = os.getenv("JWT_AUDIENCE", "remote-client")
+        
         # Черный список отозванных токенов (в продакшене использовать Redis)
         self.revoked_tokens: set = set()
         
@@ -34,12 +38,16 @@ class AuthService:
     def create_token(self, client_id: str, permissions: list = None) -> str:
         """Создание JWT токена для клиента"""
         permissions = permissions or ["execute_commands", "read_status"]
+        now = datetime.utcnow()
         
         payload = {
             "client_id": client_id,
             "permissions": permissions,
-            "exp": datetime.utcnow() + timedelta(minutes=self.token_expire_minutes),
-            "iat": datetime.utcnow(),
+            "exp": now + timedelta(minutes=self.token_expire_minutes),
+            "iat": now,
+            "nbf": now,  # Not Before - токен недействителен до этого времени
+            "iss": self.issuer,  # Issuer - кто выпустил токен
+            "aud": self.audience,  # Audience - для кого предназначен токен
             "jti": f"{client_id}_{int(time.time())}"  # JWT ID для отзыва
         }
         
@@ -52,10 +60,24 @@ class AuthService:
         return token
     
     def verify_token(self, token: str) -> Optional[Dict[str, Any]]:
-        """Проверка JWT токена"""
+        """Проверка JWT токена с полной валидацией claims"""
         try:
-            # Декодируем токен
-            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            # Декодируем токен с проверкой всех claims
+            payload = jwt.decode(
+                token,
+                self.secret_key,
+                algorithms=[self.algorithm],
+                issuer=self.issuer,
+                audience=self.audience,
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_nbf": True,
+                    "verify_iat": True,
+                    "verify_iss": True,
+                    "verify_aud": True,
+                }
+            )
             
             # Проверяем, не отозван ли токен
             jti = payload.get("jti")
@@ -68,6 +90,12 @@ class AuthService:
             
         except ExpiredSignatureError:
             logger.warning("⚠️ JWT токен истек")
+            return None
+        except jwt.InvalidIssuerError:
+            logger.warning(f"⚠️ Неверный issuer в JWT токене (ожидается: {self.issuer})")
+            return None
+        except jwt.InvalidAudienceError:
+            logger.warning(f"⚠️ Неверный audience в JWT токене (ожидается: {self.audience})")
             return None
         except InvalidTokenError as e:
             logger.warning(f"⚠️ Невалидный JWT токен: {e}")
