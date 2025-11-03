@@ -25,6 +25,7 @@ from .transfers_manager import TransfersManager
 from .file_transfer_handler import FileTransferHandler
 from app.utils.encryption import compute_hmac
 from app.config import settings
+from .enrollment_store import EnrollmentStore
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,9 @@ class WebSocketHandler:
         self.command_handler = CommandHandler(self.client_manager, self.websocket_manager)
         self.transfers = TransfersManager()
         self.file_handler = FileTransferHandler(self.transfers, self.websocket_manager, self.encryption_service)
+        # TOFU enrollment store
+        self.enrollments = EnrollmentStore()
+        self._trusted_clients = set()
         
         # Синхронизация секретов (websocket_handler передается после инициализации)
         from .secrets_sync import SecretsSyncService
@@ -188,8 +192,19 @@ class WebSocketHandler:
                     elif isinstance(try_json, dict) and try_json.get("type") == "register":
                         # Незашифрованная регистрация - это нормально для первоначальной синхронизации
                         logger.info(f"📝 Получена незашифрованная регистрация от {client_id} (первоначальная синхронизация)")
-                        # Обрабатываем регистрацию напрямую
+                        # Обрабатываем регистрацию напрямую (TOFU: pending approval)
                         new_client_id = await self._handle_registration(websocket, try_json, skip_secrets_send=True)
+                        # Если клиент ещё не доверен — кладем заявку и отправляем pending
+                        if new_client_id and new_client_id != "unknown" and not self.enrollments.is_trusted(new_client_id):
+                            try:
+                                data = try_json.get("data", {})
+                                self.enrollments.add_pending(new_client_id, data)
+                                await websocket.send_text(__import__('json').dumps({
+                                    "type": "enrollment_pending",
+                                    "data": {"client_id": new_client_id}
+                                }))
+                            except Exception:
+                                pass
                         if new_client_id != "unknown":
                             # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обновляем client_id ДО отправки сообщений
                             await self.websocket_manager.update_client_id(client_id, new_client_id)
@@ -202,19 +217,7 @@ class WebSocketHandler:
                             # Запускаем мониторинг соединения после регистрации
                             await self.websocket_manager.start_monitoring(client_id)
                             
-                            # После регистрации отправляем secrets_needed для синхронизации секретов
-                            logger.info(f"🔐 Отправка secrets_needed для синхронизации секретов клиента {client_id}")
-                            secrets_needed_msg = {
-                                "type": "secrets_needed",
-                                "message": "Требуется синхронизация секретов. Отправьте незашифрованное сообщение 'request_secrets' с вашим публичным RSA ключом (PEM формат) в поле 'data.public_key'."
-                            }
-                            try:
-                                await websocket.send_text(json.dumps(secrets_needed_msg))
-                                logger.debug(f"✅ secrets_needed отправлено клиенту {client_id}")
-                            except Exception as e:
-                                logger.error(f"❌ Ошибка отправки secrets_needed клиенту {client_id}: {e}")
-                            
-                            # Продолжаем ожидание request_secrets (НЕ закрываем соединение)
+                            # Дальнейшие действия зависят от approve — ждём решения админа
                             continue
                         else:
                             logger.warning(f"⚠️ Регистрация не удалась для {client_id}")
@@ -329,8 +332,8 @@ class WebSocketHandler:
         
         logger.info(f"📋 Регистрация клиента {client_id}: версия секретов клиента={client_secrets_version}, сервера={server_secrets_version}")
         
-        # Если версия устарела или отсутствует - отправляем секреты (только если не пропущено)
-        if not skip_secrets_send and client_secrets_version < server_secrets_version:
+        # Если версия устарела или отсутствует - отправляем секреты (только если не пропущено и уже trusted)
+        if not skip_secrets_send and client_secrets_version < server_secrets_version and self.enrollments.is_trusted(client_id):
             logger.info(f"🔄 Клиент {client_id} имеет устаревшую версию секретов, отправляем обновление")
             try:
                 await self.secrets_sync.send_secrets_to_client(client_id)
@@ -338,7 +341,7 @@ class WebSocketHandler:
                 logger.error(f"❌ Ошибка отправки секретов клиенту {client_id}: {e}")
         
         # Отправляем подтверждение с информацией о версии секретов (только если не пропущено)
-        if not skip_secrets_send:
+        if not skip_secrets_send and self.enrollments.is_trusted(client_id):
             response = {
                 "type": "registration_success",
                 "client_id": client_id,
@@ -363,10 +366,43 @@ class WebSocketHandler:
                 logger.error(f"❌ Ошибка отправки ответа регистрации: {e}")
                 return client_id  # Возвращаем client_id даже если не удалось отправить ответ
         else:
-            # Если skip_secrets_send=True, ответ будет отправлен в handle_websocket как secrets_needed
-            logger.info(f"✅ Регистрация завершена для клиента {client_id} (пропущена отправка секретов, ожидаем RSA обмен)")
+            # Если skip_secrets_send=True, работаем по TOFU: ожидаем approve администратора
+            logger.info(f"✅ Регистрация завершена для клиента {client_id} (TOFU pending)")
         
         return client_id
+
+    async def send_enrollment_result(self, client_id: str, status: str = "approved") -> None:
+        """Отправить клиенту результат утверждения (approved/rejected)."""
+        import json
+        import os
+        pinned_spkis_env = os.getenv("SERVER_PINNED_SPKIS", "").strip()
+        pinned_list = [s.strip() for s in pinned_spkis_env.split(",") if s.strip()] if pinned_spkis_env else []
+        message = {
+            "type": "enrollment_result",
+            "data": {
+                "status": status,
+                "client_id": client_id,
+                "pinned_spkis": pinned_list,
+            },
+        }
+        # Помечаем доверенным при approve
+        if status == "approved":
+            self._trusted_clients.add(client_id)
+        # Отправляем как plaintext (первое соединение ещё без шифрования)
+        ws = self.client_manager.get_client(client_id)
+        if ws:
+            await ws.send_text(json.dumps(message))
+        # Если approved — можно предложить клиенту запросить секреты
+        if status == "approved":
+            try:
+                ws = self.client_manager.get_client(client_id)
+                if ws:
+                    await ws.send_text(json.dumps({
+                        "type": "secrets_needed",
+                        "message": "Отправьте 'request_secrets' с вашим публичным RSA ключом для получения секретов"
+                    }))
+            except Exception:
+                pass
     
     async def _handle_request_secrets(self, websocket: WebSocket, message: dict, client_id: str):
         """
