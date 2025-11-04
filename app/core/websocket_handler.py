@@ -23,8 +23,8 @@ from .command_handler import CommandHandler
 from .models import ClientInfo
 from .transfers_manager import TransfersManager
 from .file_transfer_handler import FileTransferHandler
-from app.utils.encryption import compute_hmac
-from app.config import settings
+from ..utils.encryption import compute_hmac
+from ..config import settings
 from .enrollment_store import EnrollmentStore
 
 logger = logging.getLogger(__name__)
@@ -199,10 +199,26 @@ class WebSocketHandler:
                             try:
                                 data = try_json.get("data", {})
                                 self.enrollments.add_pending(new_client_id, data)
-                                await websocket.send_text(__import__('json').dumps({
-                                    "type": "enrollment_pending",
-                                    "data": {"client_id": new_client_id}
-                                }))
+                                import os, json as _json
+                                auto_approve = str(os.getenv("AUTO_APPROVE_ENROLLMENTS", "true")).lower() in ("1", "true", "yes")
+                                if auto_approve:
+                                    # Автоаппрув: помечаем доверенным и шлём понятные клиенту сообщения
+                                    self.enrollments.approve(new_client_id)
+                                    await websocket.send_text(_json.dumps({
+                                        "type": "registration_success",
+                                        "client_id": new_client_id,
+                                        "message": "Клиент успешно зарегистрирован (auto-approve)",
+                                        "secrets_version": self.secrets_sync.get_version(),
+                                    }))
+                                    await websocket.send_text(_json.dumps({
+                                        "type": "secrets_needed",
+                                        "message": "Отправьте 'request_secrets' с вашим публичным RSA ключом для получения секретов"
+                                    }))
+                                else:
+                                    await websocket.send_text(_json.dumps({
+                                        "type": "enrollment_pending",
+                                        "data": {"client_id": new_client_id}
+                                    }))
                             except Exception:
                                 pass
                         if new_client_id != "unknown":

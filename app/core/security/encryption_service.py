@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Dict, Optional
 
-from app.utils.encryption import derive_key, encrypt_aes_gcm, decrypt_aes_gcm, compute_hmac
+from ...utils.encryption import derive_key, encrypt_aes_gcm, decrypt_aes_gcm, compute_hmac
 
 logger = logging.getLogger(__name__)
 

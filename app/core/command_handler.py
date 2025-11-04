@@ -397,7 +397,9 @@ class CommandHandler:
     
     def get_command_history(self, limit: int = 100) -> List[CommandResult]:
         """Получить историю команд"""
-        return self.command_history[-limit:]
+        # deque не поддерживает срезы — конвертируем в список и отдаем хвост
+        history_list = list(self.command_history)
+        return history_list[-limit:]
     
     def get_active_commands(self) -> Dict[str, Dict[str, Any]]:
         """Получить активные команды"""

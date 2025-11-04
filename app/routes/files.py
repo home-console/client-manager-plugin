@@ -1,9 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends
 
-from app.dependencies import get_websocket_handler
-from app.core.transfers_manager import TransferState
-from app.dependencies import get_websocket_handler
-from app.schemas.files import (
+from ..dependencies import get_websocket_handler
+from ..core.transfers_manager import TransferState
+from ..schemas.files import (
     UploadInitRequest,
     UploadInitResponse,
     TransferStatusResponse,

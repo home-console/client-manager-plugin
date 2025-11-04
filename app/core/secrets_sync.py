@@ -86,7 +86,7 @@ class SecretsSyncService:
                 self.encryption_service.salt = new_salt
                 
                 # Перевычисляем производный ключ
-                from app.utils.encryption import derive_key
+                from ..utils.encryption import derive_key
                 self.encryption_service._encryption_key = derive_key(new_key, new_salt)
                 
                 # Сбрасываем состояния шифрования для всех клиентов (новый ключ)
