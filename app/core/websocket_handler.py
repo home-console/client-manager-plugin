@@ -194,35 +194,9 @@ class WebSocketHandler:
                         logger.info(f"📝 Получена незашифрованная регистрация от {client_id} (первоначальная синхронизация)")
                         # Обрабатываем регистрацию напрямую (TOFU: pending approval)
                         new_client_id = await self._handle_registration(websocket, try_json, skip_secrets_send=True)
-                        # Если клиент ещё не доверен — кладем заявку и отправляем pending
-                        if new_client_id and new_client_id != "unknown" and not self.enrollments.is_trusted(new_client_id):
-                            try:
-                                data = try_json.get("data", {})
-                                self.enrollments.add_pending(new_client_id, data)
-                                import os, json as _json
-                                auto_approve = str(os.getenv("AUTO_APPROVE_ENROLLMENTS", "true")).lower() in ("1", "true", "yes")
-                                if auto_approve:
-                                    # Автоаппрув: помечаем доверенным и шлём понятные клиенту сообщения
-                                    self.enrollments.approve(new_client_id)
-                                    await websocket.send_text(_json.dumps({
-                                        "type": "registration_success",
-                                        "client_id": new_client_id,
-                                        "message": "Клиент успешно зарегистрирован (auto-approve)",
-                                        "secrets_version": self.secrets_sync.get_version(),
-                                    }))
-                                    await websocket.send_text(_json.dumps({
-                                        "type": "secrets_needed",
-                                        "message": "Отправьте 'request_secrets' с вашим публичным RSA ключом для получения секретов"
-                                    }))
-                                else:
-                                    await websocket.send_text(_json.dumps({
-                                        "type": "enrollment_pending",
-                                        "data": {"client_id": new_client_id}
-                                    }))
-                            except Exception:
-                                pass
-                        if new_client_id != "unknown":
-                            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обновляем client_id ДО отправки сообщений
+                        
+                        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обновляем client_id СРАЗУ после регистрации
+                        if new_client_id and new_client_id != "unknown":
                             await self.websocket_manager.update_client_id(client_id, new_client_id)
                             client_id = new_client_id
                             self.websocket_manager.update_metadata(client_id, {
@@ -230,9 +204,49 @@ class WebSocketHandler:
                                 'registered_at': time.time()
                             })
                             
-                            # Запускаем мониторинг соединения после регистрации
-                            await self.websocket_manager.start_monitoring(client_id)
+                            # Если клиент ещё не доверен — кладем заявку и отправляем pending
+                            if not self.enrollments.is_trusted(client_id):
+                                try:
+                                    data = try_json.get("data", {})
+                                    self.enrollments.add_pending(client_id, data)
+                                    import os, json as _json
+                                    auto_approve = str(os.getenv("AUTO_APPROVE_ENROLLMENTS", "true")).lower() in ("1", "true", "yes")
+                                    logger.info(f"🔍 AUTO_APPROVE_ENROLLMENTS={auto_approve} для клиента {client_id}")
+                                    if auto_approve:
+                                        # Автоаппрув: помечаем доверенным и шлём понятные клиенту сообщения
+                                        self.enrollments.approve(client_id)
+                                        logger.info(f"✅ Клиент {client_id} автоматически утвержден")
+                                        await websocket.send_text(_json.dumps({
+                                            "type": "registration_success",
+                                            "client_id": client_id,
+                                            "message": "Клиент успешно зарегистрирован (auto-approve)",
+                                            "secrets_version": self.secrets_sync.get_version(),
+                                        }))
+                                        await websocket.send_text(_json.dumps({
+                                            "type": "secrets_needed",
+                                            "message": "Отправьте 'request_secrets' с вашим публичным RSA ключом для получения секретов"
+                                        }))
+                                    else:
+                                        logger.info(f"⏳ Клиент {client_id} ожидает утверждения")
+                                        await websocket.send_text(_json.dumps({
+                                            "type": "enrollment_pending",
+                                            "data": {"client_id": client_id}
+                                        }))
+                                except Exception as e:
+                                    logger.error(f"❌ Ошибка обработки enrollment для {client_id}: {e}")
+                                    pass
                             
+                            # Запуск мониторинга соединения:
+                            # - не запускаем, если WS_MONITOR_DISABLE=true
+                            # - не запускаем во время TOFU/plaintext регистрации (skip_secrets_send=True)
+                            import os, asyncio as _asyncio
+                            ws_mon_disable = str(os.getenv("WS_MONITOR_DISABLE", "true")).lower() in ("1", "true", "yes")
+                            if not ws_mon_disable and self.enrollments.is_trusted(client_id):
+                                # Небольшая задержка, чтобы клиент успел обработать registration_success
+                                await _asyncio.sleep(0.5)
+                                await self.websocket_manager.start_monitoring(client_id)
+                            # иначе мониторинг запустим позже, когда клиент станет trusted/зашифрован
+                        
                             # Дальнейшие действия зависят от approve — ждём решения админа
                             continue
                         else:
@@ -302,8 +316,8 @@ class WebSocketHandler:
                             'registered_at': time.time()
                         })
                         
-                        # Запускаем мониторинг соединения после регистрации
-                        await self.websocket_manager.start_monitoring(client_id)
+                        # ИСПРАВЛЕНИЕ: НЕ запускаем мониторинг здесь!
+                        # Мониторинг запускается внутри _handle_registration ПОСЛЕ отправки registration_success
                 else:
                     # Маршрутизация остальных сообщений
                     await self.message_router.route_message(websocket, message, client_id)
@@ -357,18 +371,22 @@ class WebSocketHandler:
                 logger.error(f"❌ Ошибка отправки секретов клиенту {client_id}: {e}")
         
         # Отправляем подтверждение с информацией о версии секретов (только если не пропущено)
-        if not skip_secrets_send and self.enrollments.is_trusted(client_id):
+        if not skip_secrets_send:
+            # ИСПРАВЛЕНИЕ: Отправляем ответ ВСЕГДА, даже для недоверенных клиентов
+            is_trusted = self.enrollments.is_trusted(client_id)
+            
             response = {
                 "type": "registration_success",
                 "client_id": client_id,
-                "message": "Клиент успешно зарегистрирован",
+                "message": "Клиент зарегистрирован" if is_trusted else "Клиент зарегистрирован (ожидает утверждения)",
                 "server_info": {
                     "version": "2.0.0",
                     "features": ["commands", "file_ops", "monitoring", "encryption", "secrets_sync"],
                     "max_command_timeout": 300,
                     "max_output_size": "10MB"
                 },
-                "secrets_version": server_secrets_version  # Информируем клиента о версии
+                "secrets_version": server_secrets_version,  # Информируем клиента о версии
+                "trusted": is_trusted  # Сообщаем клиенту его статус
             }
             
             # Шифруем и отправляем ответ
@@ -377,7 +395,13 @@ class WebSocketHandler:
             # Проверяем, что соединение еще активно
             try:
                 await websocket.send_text(encrypted_response)
-                logger.info(f"✅ Регистрация завершена для клиента {client_id}")
+                logger.info(f"✅ Регистрация завершена для клиента {client_id} (trusted={is_trusted})")
+                # После успешной регистрации (зашифрованной) запустим мониторинг, если разрешено
+                import os, asyncio as _asyncio
+                ws_mon_disable = str(os.getenv("WS_MONITOR_DISABLE", "true")).lower() in ("1", "true", "yes")
+                if not ws_mon_disable and is_trusted:
+                    await _asyncio.sleep(0.5)
+                    await self.websocket_manager.start_monitoring(client_id)
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки ответа регистрации: {e}")
                 return client_id  # Возвращаем client_id даже если не удалось отправить ответ

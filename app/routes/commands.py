@@ -5,9 +5,10 @@
 import logging
 import time
 import asyncio
-from typing import List
-from fastapi import APIRouter, HTTPException, Depends
+from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
+from enum import Enum
 
 from ..core.models import CommandResult
 from ..dependencies import get_websocket_handler
@@ -31,64 +32,115 @@ class CommandAccepted(BaseModel):
     status: str = "queued"
 
 
+class CommandNameEnum(str, Enum):
+    """Имя базовой команды (выпадающий список в query)"""
+    ls = "ls"
+    cat = "cat"
+    head = "head"
+    tail = "tail"
+    pwd = "pwd"
+    whoami = "whoami"
+    hostname = "hostname"
+    uname = "uname"
+    date = "date"
+    uptime = "uptime"
+    env = "env"
+    echo = "echo"
+    grep = "grep"
+    find = "find"
+    awk = "awk"
+    sed = "sed"
+    sort = "sort"
+    uniq = "uniq"
+    wc = "wc"
+    ps = "ps"
+    df = "df"
+    du = "du"
+    ping = "ping"
+    ip = "ip"
+    curl = "curl"
+    wget = "wget"
+    touch = "touch"
+    mkdir = "mkdir"
+    cp = "cp"
+    mv = "mv"
+    tar = "tar"
+    zip = "zip"
+
+
+def _build_command_text(name: Optional[str], body: Optional[CommandRequest]) -> str:
+    """Построение текста команды из query name или тела запроса."""
+    if body and body.command:
+        return body.command
+    if name:
+        # Собираем из name и params (если есть)
+        params: Dict[str, Any] = body.params if body and body.params else {}
+        # params может быть как dict опций/аргументов; формируем строку предсказуемо
+        parts: List[str] = [name]
+        for k, v in params.items():
+            if v is None:
+                parts.append(str(k))
+            else:
+                parts.append(str(k))
+                parts.append(str(v))
+        return " ".join(parts)
+    raise HTTPException(status_code=400, detail="Необходимо указать либо command в теле, либо name в query")
+
+
 @router.post("/api/commands/{client_id}", response_model=CommandResult)
-async def execute_command(client_id: str, request: CommandRequest, timeout: int = 30, 
-                         handler = Depends(get_websocket_handler)):
-    """Выполнить команду и получить результат"""
-    # Проверяем, что клиент существует
+async def execute_command(
+    client_id: str,
+    request: Optional[CommandRequest] = None,
+    timeout: int = 30,
+    name: Optional[CommandNameEnum] = Query(None, description="Имя команды (query param)", example="ls"),
+    handler = Depends(get_websocket_handler),
+):
+    """Выполнить команду и получить результат
+    - Либо передайте `command` в теле
+    - Либо укажите `name` в query и опциональные `params` в теле
+    """
     websocket = handler.client_manager.get_client(client_id)
     if not websocket:
         raise HTTPException(status_code=404, detail="Клиент не найден")
-    
-    # Генерируем ID команды
+
     command_id = f"cmd_{int(time.time())}"
-    
-    # Определяем текст команды в зависимости от режима
-    if request.command:
-        command_text = request.command
-    elif request.name and request.params is not None:
-        command_text = f"{request.name} {request.params}"
-    else:
-        raise HTTPException(status_code=400, detail="Необходимо указать либо command, либо name+params")
-    
-    # Отправляем команду
+
+    command_text = _build_command_text(name=name, body=request)
+
     success = await handler.send_command_to_client(
-        client_id, 
-        command_text, 
+        client_id,
+        command_text,
         command_id
     )
-    
     if not success:
         raise HTTPException(status_code=500, detail="Ошибка отправки команды")
-    
-    # Ждем результат выполнения команды (Event-driven подход)
+
     result = await handler.command_handler.wait_for_command_result(command_id, timeout)
     if not result:
         raise HTTPException(status_code=408, detail=f"Таймаут ожидания результата команды ({timeout}с)")
-    
+
     return result
 
 
 @router.post("/api/commands/{client_id}/async", response_model=CommandAccepted)
-async def execute_command_async(client_id: str, request: CommandRequest, handler = Depends(get_websocket_handler)):
-    """Асинхронный запуск команды: сразу возвращает command_id без ожидания результата"""
-    # Проверяем, что клиент существует
+async def execute_command_async(
+    client_id: str,
+    request: Optional[CommandRequest] = None,
+    name: Optional[CommandNameEnum] = Query(None, description="Имя команды (query param)", example="ls"),
+    handler = Depends(get_websocket_handler),
+):
+    """Асинхронный запуск команды: сразу возвращает command_id без ожидания результата
+    - Либо `command` в теле
+    - Либо `name` в query и опциональные `params` в теле
+    """
     websocket = handler.client_manager.get_client(client_id)
     if not websocket:
         raise HTTPException(status_code=404, detail="Клиент не найден")
 
-    # Генерируем ID команды
     command_id = f"cmd_{int(time.time())}"
 
-    # Определяем текст команды
-    if request.command:
-        command_text = request.command
-    elif request.name and request.params is not None:
-        command_text = f"{request.name} {request.params}"
-    else:
-        raise HTTPException(status_code=400, detail="Необходимо указать либо command, либо name+params")
+    command_text = _build_command_text(name=name, body=request)
 
-    # Отправляем команду (регистрация выполняется внутри send_command_to_client)
     success = await handler.send_command_to_client(client_id, command_text, command_id)
     if not success:
         raise HTTPException(status_code=500, detail="Ошибка отправки команды")
