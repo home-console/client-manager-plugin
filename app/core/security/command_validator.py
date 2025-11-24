@@ -38,8 +38,12 @@ class CommandValidator:
         # Максимальная длина команды
         self.max_command_length = int(os.getenv("MAX_COMMAND_LENGTH", "1000"))
         
-        # Режим валидации (strict или permissive)
-        self.validation_mode = os.getenv("COMMAND_VALIDATION_MODE", "strict")
+        # Режим валидации (strict, permissive или disabled)
+        validation_mode = os.getenv("COMMAND_VALIDATION_MODE", "strict")
+        if validation_mode.lower() in ["disabled", "off", "none"]:
+            self.validation_mode = "disabled"
+        else:
+            self.validation_mode = validation_mode.lower()
     
     def _load_command_whitelist(self) -> Dict[CommandSecurityLevel, Set[str]]:
         """Загрузка whitelist команд"""
@@ -180,7 +184,23 @@ class CommandValidator:
         
         base_command = parts[0]
         
-        # Проверка на опасные паттерны
+        # В disabled режиме проверяем только самые критичные паттерны
+        if self.validation_mode == "disabled":
+            # Только критичные паттерны, которые могут разрушить систему
+            critical_patterns = [
+                re.compile(r'rm\s+(-[rfRF]+\s+)*[/]+\s*$', re.IGNORECASE),  # rm -rf /
+                re.compile(r'rm\s+.*\s+[/]+\s*$', re.IGNORECASE),           # rm что-то /
+                re.compile(r':\(\)\{\s*:\|:&\s*\};:', re.IGNORECASE),        # Fork bomb
+            ]
+            for pattern in critical_patterns:
+                if pattern.search(command):
+                    logger.warning(f"🚫 Критичный опасный паттерн обнаружен в команде от {client_id}: {command}")
+                    return False, f"Обнаружен критичный опасный паттерн в команде"
+            # В disabled режиме разрешаем все остальное, включая Restricted
+            logger.debug(f"✅ Команда разрешена в disabled режиме: {base_command}")
+            return True, None
+        
+        # Проверка на опасные паттерны (в strict и permissive режимах)
         for pattern in self.dangerous_patterns:
             if pattern.search(command):
                 logger.warning(f"🚫 Опасный паттерн обнаружен в команде от {client_id}: {command}")
@@ -189,7 +209,8 @@ class CommandValidator:
         # Проверка whitelist
         command_level = self._get_command_level(base_command)
         
-        if command_level == CommandSecurityLevel.RESTRICTED:
+        # В strict и permissive режимах блокируем Restricted команды
+        if command_level == CommandSecurityLevel.RESTRICTED and self.validation_mode != "disabled":
             logger.warning(f"🚫 Запрещенная команда от {client_id}: {base_command}")
             return False, f"Команда '{base_command}' запрещена"
         

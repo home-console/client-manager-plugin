@@ -901,10 +901,58 @@ class WebSocketHandler:
             summary["bytes_received"] += int(t.get("bytes_received", 0))
         return summary
     
+    async def download_file_from_device(self, device_id: str, remote_path: str) -> bytes:
+        """Скачивание файла с устройства через агента"""
+        # ВРЕМЕННАЯ ЗАГЛУШКА: Файловая передача через команды ограничена
+        # TODO: Реализовать настоящую передачу файлов через WebSocket
+        raise Exception("Передача файлов пока не реализована. Используйте команды напрямую.")
+
+    async def upload_file_to_device(self, device_id: str, local_path: str, file_data: bytes):
+        """Загрузка файла на устройство через агента"""
+        # ВРЕМЕННАЯ ЗАГЛУШКА: Файловая передача через команды ограничена
+        # TODO: Реализовать настоящую передачу файлов через WebSocket
+        raise Exception("Передача файлов пока не реализована. Используйте команды напрямую.")
+
+    async def delete_file_on_device(self, device_id: str, remote_path: str):
+        """Удаление файла на устройстве"""
+        command = f"rm -f '{remote_path}'"
+        result = await self.send_command_to_client(device_id, command)
+
+        if not result.success:
+            logger.warning(f"Не удалось удалить файл {remote_path} на устройстве {device_id}: {result.error}")
+
+    async def list_files_on_device(self, device_id: str, remote_path: str, recursive: bool = False) -> list:
+        """Получение списка файлов на устройстве"""
+        flag = "-R" if recursive else ""
+        command = f"find '{remote_path}' {flag} -type f -exec ls -la {{}} \\; 2>/dev/null || ls -la '{remote_path}'"
+
+        result = await self.send_command_to_client(device_id, command)
+
+        if not result.success:
+            logger.warning(f"Не удалось получить список файлов на {device_id}: {result.error}")
+            return []
+
+        # Парсим вывод ls
+        lines = result.result.split('\n')
+        files = []
+
+        for line in lines:
+            if not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) >= 9:
+                files.append({
+                    "permissions": parts[0],
+                    "type": "file",  # упрощение
+                    "path": ' '.join(parts[8:]),  # имя файла может содержать пробелы
+                })
+
+        return files
+
     async def broadcast_message(self, message: dict, exclude_clients: set = None):
         """Широковещательная отправка сообщения"""
         exclude_clients = exclude_clients or set()
-        
+
         for client_id in self.client_manager.get_all_clients().keys():
             if client_id not in exclude_clients:
                 try:

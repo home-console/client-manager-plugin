@@ -4,7 +4,7 @@
 
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
@@ -81,6 +81,26 @@ class Settings(BaseSettings):
     
     # TLS downgrade (⚠️ НЕ ВКЛЮЧАЙТЕ В ПРОДАКШЕНЕ!)
     allow_tls_downgrade: bool = Field(default=False, env="ALLOW_TLS_DOWNGRADE")
+
+    # Remote client установки через SSH
+    remote_client_repo: str = Field(
+        default="remote-home-labs/home-project_remote-client",
+        env="REMOTE_CLIENT_REPO",
+        description="GitHub repo (owner/name) с релизами remote_client",
+    )
+    remote_client_release_base_url: Optional[str] = Field(
+        default=None,
+        env="REMOTE_CLIENT_RELEASE_BASE_URL",
+        description="Если задан, используется напрямую для загрузки бинарей remote_client",
+    )
+    remote_client_install_dir: str = Field(
+        default="/opt/remote-client",
+        env="REMOTE_CLIENT_INSTALL_DIR",
+    )
+    remote_client_binary_name: str = Field(
+        default="remote-client",
+        env="REMOTE_CLIENT_BINARY_NAME",
+    )
     
     # Pydantic v2: настройка чтения .env и игнор лишних ключей
     model_config = SettingsConfigDict(

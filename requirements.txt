@@ -6,3 +6,6 @@ pyjwt>=2.8.0
 python-multipart
 pydantic-settings>=2.0.0
 python-dotenv
+paramiko>=3.4.0
+aiofiles
+httpx

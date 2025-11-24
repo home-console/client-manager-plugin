@@ -175,29 +175,70 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4()))
         set_correlation_id(correlation_id)
         
-        # Логируем входящий запрос
-        logger = get_logger(__name__)
-        logger.info(
-            "Incoming request",
-            method=request.method,
-            path=request.url.path,
-            client_ip=request.client.host if request.client else None,
-            correlation_id=correlation_id
+        # Пропускаем логирование автоматических запросов для уменьшения шума
+        import os
+        log_health_checks = os.getenv("LOG_HEALTH_CHECKS", "false").lower() == "true"
+        log_api_clients = os.getenv("LOG_API_CLIENTS", "false").lower() == "true"
+
+        # Health-чек запросы
+        is_health_check = request.url.path in ["/health", "/api/health"] and request.method == "GET" and not log_health_checks
+
+        # Автоматические запросы веб-интерфейса (обновление списка клиентов каждые 5 секунд)
+        is_auto_refresh = (
+            request.url.path in ["/api/clients"] and
+            request.method == "GET" and
+            not log_api_clients
         )
-        
+
+        # Пропускаем логирование если это автоматический запрос
+        skip_logging = is_health_check or is_auto_refresh
+
+        if not skip_logging:
+            # Логируем входящий запрос
+            logger = get_logger(__name__)
+            logger.info(
+                "Incoming request",
+                method=request.method,
+                path=request.url.path,
+                client_ip=request.client.host if request.client else None,
+                correlation_id=correlation_id
+            )
+
         # Обрабатываем запрос
         response = await call_next(request)
-        
+
         # Добавляем correlation ID в response headers
         response.headers["X-Correlation-ID"] = correlation_id
-        
-        # Логируем ответ
-        logger.info(
-            "Request completed",
-            method=request.method,
-            path=request.url.path,
-            status_code=response.status_code,
-            correlation_id=correlation_id
-        )
+
+        if not skip_logging:
+            # Логируем ответ
+            logger = get_logger(__name__)
+            logger.info(
+                "Request completed",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                correlation_id=correlation_id
+            )
+        elif is_health_check and response.status_code >= 400:
+            # Логируем только проблемные health-чек запросы
+            logger = get_logger(__name__)
+            logger.warning(
+                "Health check failed",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                correlation_id=correlation_id
+            )
+        elif is_auto_refresh and response.status_code >= 400:
+            # Логируем только проблемные автоматические запросы
+            logger = get_logger(__name__)
+            logger.warning(
+                "Auto refresh failed",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                correlation_id=correlation_id
+            )
         
         return response

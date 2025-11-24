@@ -59,6 +59,12 @@ JWT_EXPIRE_MINUTES=60
 
 # Шифрование
 SERVER_ENCRYPTION_KEY=your-encryption-key-here
+
+# Установка remote_client (опционально)
+# Если укажете RELEASE_BASE_URL — REPO не нужен
+REMOTE_CLIENT_REPO=remote-home-labs/home-project_remote-client
+# REMOTE_CLIENT_RELEASE_BASE_URL=https://github.com/<org>/<repo>/releases/latest/download
+REMOTE_CLIENT_INSTALL_DIR=/opt/remote-client
 ```
 
 ### 3. Запуск сервера
@@ -98,6 +104,28 @@ curl -k https://localhost:10000/api/clients
 - `GET /api/commands/{command_id}/status` — статус команды (active/result)
 - `GET /api/commands/history` — история команд
 - `GET /api/commands/{command_id}` — результат команды
+
+#### Установка remote_client по SSH
+- `POST /api/installations/remote-client` — подключается к устройству по SSH, скачивает `remote_client`
+  с GitHub и (опционально) создает systemd сервис.
+
+Пример:
+```bash
+curl -k -X POST https://localhost:10000/api/installations/remote-client \
+  -H "Content-Type: application/json" \
+  -d '{
+        "host": "192.168.1.42",
+        "username": "root",
+        "password": "s3cr3t",
+        "install_dir": "/opt/remote-client",
+        "create_service": true,
+        "env": {"COMMAND_VALIDATION_MODE": "disabled"}
+      }'
+```
+
+По умолчанию сервер формирует URL вида
+`https://github.com/<REMOTE_CLIENT_REPO>/releases/latest/download/remote-client-<os>-<arch>`.
+Можно передать `download_url` вручную или задать `REMOTE_CLIENT_RELEASE_BASE_URL`.
 
 #### Файлы (REST + WS)
 - `POST /api/files/upload/init` — инициализация upload, возвращает `transfer_id`

@@ -45,15 +45,42 @@ async def root():
                 clients.forEach(client => {
                     const clientDiv = document.createElement('div');
                     clientDiv.className = `client ${client.status}`;
+                    const deviceType = client.device_type || 'generic';
+                    const tags = client.tags || [];
+                    const capabilities = client.capabilities || [];
+
                     clientDiv.innerHTML = `
                         <h3>${client.hostname} (${client.id})</h3>
-                        <p>IP: ${client.ip}:${client.port}</p>
+                        <p>IP: ${client.ip}:${client.port} | Тип: <strong>${deviceType}</strong></p>
                         <p>Status: ${client.status}</p>
                         <p>Connected: ${client.connected_at}</p>
                         <p>Last heartbeat: ${client.last_heartbeat}</p>
-                        <input type="text" id="cmd_${client.id}" placeholder="Команда">
-                        <button onclick="sendCommand('${client.id}')">Выполнить</button>
+                        ${tags.length > 0 ? `<p>Теги: ${tags.join(', ')}</p>` : ''}
+                        <div style="margin: 10px 0;">
+                            <select id="universal_cmd_${client.id}" style="margin-right: 10px;">
+                                <option value="system.info">Системная информация</option>
+                                <option value="network.info">Сетевая информация</option>
+                                <option value="file.list">Список файлов</option>
+                                <option value="disk.usage">Использование диска</option>
+                                <option value="process.list">Список процессов</option>
+                            </select>
+                            <input type="text" id="cmd_path_${client.id}" placeholder="Путь (опционально)" style="width: 200px;">
+                        </div>
+                        <button onclick="sendUniversalCommand('${client.id}')">Универсальная команда</button>
+                        <input type="text" id="cmd_${client.id}" placeholder="Нативная команда" style="margin-left: 10px; width: 300px;">
+                        <button onclick="sendCommand('${client.id}')">Нативная команда</button>
                         <button onclick="sendCancel('${client.id}')">Отменить</button>
+                        <br>
+                        <div style="margin-top: 10px;">
+                            <input type="text" id="cloud_path_${client.id}" placeholder="Путь к файлу на устройстве" style="width: 200px;">
+                            <select id="cloud_service_${client.id}" style="margin: 0 5px;">
+                                <option value="yandex_disk">Яндекс.Диск</option>
+                                <option value="icloud">iCloud</option>
+                            </select>
+                            <input type="text" id="cloud_dest_${client.id}" placeholder="Путь в облаке" style="width: 150px;">
+                            <button onclick="uploadToCloud('${client.id}')">В облако</button>
+                            <button onclick="downloadFromCloud('${client.id}')">Из облака</button>
+                        </div>
                     `;
                     div.appendChild(clientDiv);
                 });
@@ -80,11 +107,123 @@ async def root():
                 const response = await fetch(`/api/commands/${clientId}/cancel`, {
                     method: 'POST'
                 });
-                
+
                 if (response.ok) {
                     alert('Отмена отправлена');
                 } else {
                     alert('Ошибка отправки отмены');
+                }
+            }
+
+            async function sendUniversalCommand(clientId) {
+                const cmdSelect = document.getElementById(`universal_cmd_${clientId}`);
+                const pathInput = document.getElementById(`cmd_path_${clientId}`);
+
+                const commandType = cmdSelect.value;
+                const path = pathInput.value.trim();
+
+                const requestBody = {
+                    command_type: commandType,
+                    params: {},
+                    async_execution: false
+                };
+
+                // Добавляем параметры в зависимости от команды
+                if (path && (commandType.startsWith('file.') || commandType === 'disk.usage')) {
+                    if (commandType === 'file.list') {
+                        requestBody.params = { path: path || '.' };
+                    }
+                }
+
+                try {
+                    const response = await fetch(`/api/universal/${clientId}/execute`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        alert(`Результат:\\n${JSON.stringify(result.result, null, 2)}`);
+                    } else {
+                        alert(`Ошибка: ${result.detail}`);
+                    }
+                } catch (error) {
+                    alert(`Ошибка выполнения: ${error.message}`);
+                }
+            }
+
+            async function uploadToCloud(clientId) {
+                const devicePath = document.getElementById(`cloud_path_${clientId}`).value;
+                const cloudService = document.getElementById(`cloud_service_${clientId}`).value;
+                const cloudPath = document.getElementById(`cloud_dest_${clientId}`).value;
+
+                if (!devicePath || !cloudPath) {
+                    alert('Заполните все поля!');
+                    return;
+                }
+
+                const requestBody = {
+                    device_id: clientId,
+                    remote_path: devicePath,
+                    cloud_service: cloudService,
+                    cloud_path: cloudPath,
+                    delete_after: confirm('Удалить файл с устройства после загрузки?')
+                };
+
+                try {
+                    const response = await fetch('/api/cloud/upload', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        alert(`Файл загружен в ${cloudService}!\\nРазмер: ${result.file_size} bytes`);
+                    } else {
+                        alert(`Ошибка загрузки: ${result.detail || 'Неизвестная ошибка'}`);
+                    }
+                } catch (error) {
+                    alert(`Ошибка: ${error.message}`);
+                }
+            }
+
+            async function downloadFromCloud(clientId) {
+                const devicePath = document.getElementById(`cloud_path_${clientId}`).value;
+                const cloudService = document.getElementById(`cloud_service_${clientId}`).value;
+                const cloudPath = document.getElementById(`cloud_dest_${clientId}`).value;
+
+                if (!devicePath || !cloudPath) {
+                    alert('Заполните все поля!');
+                    return;
+                }
+
+                const requestBody = {
+                    device_id: clientId,
+                    local_path: devicePath,
+                    cloud_service: cloudService,
+                    cloud_path: cloudPath
+                };
+
+                try {
+                    const response = await fetch('/api/cloud/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        alert(`Файл скачан из ${cloudService}!\\nРазмер: ${result.file_size} bytes`);
+                    } else {
+                        alert(`Ошибка скачивания: ${result.detail || 'Неизвестная ошибка'}`);
+                    }
+                } catch (error) {
+                    alert(`Ошибка: ${error.message}`);
                 }
             }
             

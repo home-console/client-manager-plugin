@@ -8,7 +8,26 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.websocket_handler import WebSocketHandler
 from .dependencies import set_websocket_handler, get_websocket_handler
-from .routes import clients, commands, health, files, secrets, enrollments
+
+# Импорт cloud_services с проверкой
+try:
+    from .core.cloud_services import cloud_manager
+    CLOUD_SERVICES_AVAILABLE = True
+except ImportError as e:
+    CLOUD_SERVICES_AVAILABLE = False
+    cloud_manager = None
+    print(f"⚠️  Облачные сервисы недоступны: {e}")
+from .routes import (
+    clients,
+    commands,
+    health,
+    files,
+    secrets,
+    enrollments,
+    universal_commands,
+    installations,
+    cloud,
+)
 from .config import settings, init_settings
 from .utils.structured_logger import setup_logging, get_logger, LoggingMiddleware
 
@@ -34,6 +53,9 @@ async def lifespan(app: FastAPI):
     handler = WebSocketHandler()
     set_websocket_handler(handler)
     logger.info("WebSocket обработчик инициализирован")
+
+    # Инициализация облачных сервисов
+    logger.info("Облачные сервисы инициализированы")
     
     yield
     
@@ -82,7 +104,10 @@ def create_app() -> FastAPI:
     app.include_router(files.router)
     app.include_router(secrets.router)
     app.include_router(enrollments.router)
-    
+    app.include_router(installations.router)
+    app.include_router(universal_commands.router)
+    app.include_router(cloud.router, prefix="/api/cloud", tags=["Cloud Services"])
+
     return app
 
 
