@@ -97,7 +97,7 @@ class WebSocketHandler:
         self.message_router.register_handler('register', registration_handler.handle)
         
         # Обработчик heartbeat
-        heartbeat_handler = HeartbeatHandler(self.client_manager)
+        heartbeat_handler = HeartbeatHandler(self.client_manager, self.encryption_service)
         self.message_router.register_handler('heartbeat', heartbeat_handler.handle)
         
         # Обработчики команд
@@ -362,8 +362,20 @@ class WebSocketHandler:
         
         logger.info(f"📋 Регистрация клиента {client_id}: версия секретов клиента={client_secrets_version}, сервера={server_secrets_version}")
         
+        # Проверяем статус доверия ДО отправки секретов
+        is_trusted = self.enrollments.is_trusted(client_id)
+        
+        # Автоматическое утверждение для зашифрованных регистраций
+        if not is_trusted:
+            import os
+            auto_approve = str(os.getenv("AUTO_APPROVE_ENROLLMENTS", "false")).lower() in ("1", "true", "yes")
+            if auto_approve:
+                self.enrollments.approve(client_id)
+                is_trusted = True
+                logger.info(f"✅ Автоматическое утверждение для клиента {client_id}")
+        
         # Если версия устарела или отсутствует - отправляем секреты (только если не пропущено и уже trusted)
-        if not skip_secrets_send and client_secrets_version < server_secrets_version and self.enrollments.is_trusted(client_id):
+        if not skip_secrets_send and client_secrets_version < server_secrets_version and is_trusted:
             logger.info(f"🔄 Клиент {client_id} имеет устаревшую версию секретов, отправляем обновление")
             try:
                 await self.secrets_sync.send_secrets_to_client(client_id)
@@ -372,9 +384,6 @@ class WebSocketHandler:
         
         # Отправляем подтверждение с информацией о версии секретов (только если не пропущено)
         if not skip_secrets_send:
-            # ИСПРАВЛЕНИЕ: Отправляем ответ ВСЕГДА, даже для недоверенных клиентов
-            is_trusted = self.enrollments.is_trusted(client_id)
-            
             response = {
                 "type": "registration_success",
                 "client_id": client_id,

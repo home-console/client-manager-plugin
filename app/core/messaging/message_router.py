@@ -118,25 +118,28 @@ class RegistrationHandler(MessageHandler):
 
 class HeartbeatHandler(MessageHandler):
     """Обработчик heartbeat сообщений"""
-    
-    def __init__(self, client_manager):
+
+    def __init__(self, client_manager, encryption_service):
         super().__init__("HeartbeatHandler")
         self.client_manager = client_manager
-    
+        self.encryption_service = encryption_service
+
     async def handle(self, websocket: WebSocket, message: dict, client_id: str):
         """Обработка heartbeat"""
         self.log_message("heartbeat", client_id, "Обработка heartbeat")
-        
+
         # Обновляем время последнего heartbeat
         self.client_manager.update_heartbeat(client_id)
-        
+
         # Отправляем подтверждение
         response = {
             "type": "heartbeat_ack",
             "timestamp": message.get('data', {}).get('timestamp')
         }
-        
-        await websocket.send_text(json.dumps(response))
+
+        # Шифруем ответ
+        encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
+        await websocket.send_text(encrypted_response)
 
 
 class CommandResultHandler(MessageHandler):
