@@ -51,6 +51,12 @@ async def upload_init(request: Request, handler = Depends(get_websocket_handler)
 
         size = os.path.getsize(tmp_path)
         # Создаем трансфер
+        # Если путь выглядит как директория (заканчивается на / или '.'), дополним его оригинальным именем файла
+        if original_filename and (path == '.' or path.endswith(os.path.sep) or path.endswith('/')):
+            # Уберём возможный завершающий сепаратор
+            normalized = path.rstrip(os.path.sep).rstrip('/')
+            path = os.path.join(normalized, original_filename)
+
         transfer_id = await handler.transfers.create_upload(client_id, path, size=size, sha256=None, direction=direction)
         handler.transfers.transfers[transfer_id]["source_path_server"] = tmp_path
         if original_filename:
@@ -82,6 +88,12 @@ async def upload_init(request: Request, handler = Depends(get_websocket_handler)
     # Базовая валидация пути (size больше не обязателен)
     if not req.path:
         raise HTTPException(status_code=400, detail="Некорректные параметры")
+
+    # Если путь указывает на директорию и у нас есть original_filename,
+    # сформируем полный путь на стороне серверa до создания трансфера.
+    if req.original_filename and (req.path == '.' or req.path.endswith(os.path.sep) or req.path.endswith('/')):
+        normalized = req.path.rstrip(os.path.sep).rstrip('/')
+        req.path = os.path.join(normalized, req.original_filename)
 
     # Создаем трансфер и вернем transfer_id
     transfer_id = await handler.transfers.create_upload(req.client_id, req.path, req.size, req.sha256, req.direction)
