@@ -376,6 +376,11 @@ class FileTransferHandler:
             logger = __import__('logging').getLogger(__name__)
             if not sent_ok:
                 logger.warning(f"❗ Start message NOT sent to {client_id} (transfer={transfer_id})")
+                try:
+                    await self.transfers.set_state(transfer_id, TransferState.FAILED)
+                except Exception:
+                    pass
+                return
             else:
                 logger.info(f"📤 Start message sent to {client_id} (transfer={transfer_id}, size={size})")
         except Exception as e:
@@ -415,6 +420,10 @@ class FileTransferHandler:
                     logger = __import__('logging').getLogger(__name__)
                     if not ok:
                         logger.warning(f"❗ Chunk send FAILED for {client_id} chunk_index={sent // chunk_size} transfer={transfer_id}")
+                        try:
+                            await self.transfers.set_state(transfer_id, TransferState.FAILED)
+                        except Exception:
+                            pass
                         # Если не удалось отправить — прекращаем попытки
                         return
                     else:
@@ -430,8 +439,15 @@ class FileTransferHandler:
                     pass
 
         try:
+            # Обновим прогресс и пометить как COMPLETED; затем явно вызовем set_state
+            # чтобы сработала авто-очистка файлов в TransfersManager.
             await self.transfers.update_progress(transfer_id, sent, state=TransferState.COMPLETED)
+            try:
+                await self.transfers.set_state(transfer_id, TransferState.COMPLETED)
+            except Exception:
+                pass
         except Exception:
+            # Если update_progress упал — используем set_state как запасной вариант
             await self.transfers.set_state(transfer_id, TransferState.COMPLETED)
 
         eof = {"type": "file_eof", "data": {"transfer_id": transfer_id}}

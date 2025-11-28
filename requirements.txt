@@ -9,3 +9,7 @@ python-dotenv
 paramiko>=3.4.0
 aiofiles
 httpx
+
+# Celery worker dependencies for PoC
+celery>=5.2
+requests

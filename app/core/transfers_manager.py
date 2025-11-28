@@ -1,4 +1,5 @@
 import time
+import os
 import uuid
 import asyncio
 from typing import Dict, Optional, Any
@@ -22,6 +23,8 @@ class TransfersManager:
         self._lock = Lock()
         # Условные объекты для ожидания изменений состояния конкретного трансфера
         self._conds: Dict[str, asyncio.Condition] = {}
+        # Блокировки на запись для файлов по transfer_id — чтобы безопасно писать чанки параллельно
+        self._file_locks: Dict[str, asyncio.Lock] = {}
 
     async def create_upload(self, client_id: str, path: str, size: Optional[int] = None, sha256: Optional[str] = None, direction: str = "download") -> str:
         transfer_id = str(uuid.uuid4())
@@ -41,7 +44,15 @@ class TransfersManager:
             }
             # Создаём условие для этого трансфера, чтобы другие корутины могли ждать изменений
             self._conds[transfer_id] = asyncio.Condition()
+            # Создаём lock для файловых операций по этому трансферу
+            self._file_locks[transfer_id] = asyncio.Lock()
         return transfer_id
+
+    def get_file_lock(self, transfer_id: str) -> asyncio.Lock:
+        """Вернуть asyncio.Lock для операций с файлом трансфера (создаётся при необходимости)."""
+        if transfer_id not in self._file_locks:
+            self._file_locks[transfer_id] = asyncio.Lock()
+        return self._file_locks[transfer_id]
 
     def get(self, transfer_id: str) -> Optional[Dict[str, Any]]:
         return self.transfers.get(transfer_id)
@@ -71,6 +82,36 @@ class TransfersManager:
                 return
             t["state"] = state
             t["updated_at"] = time.time()
+            # Авто-очистка временных файлов: если трансфер завершён/отменён/упал,
+            # удалим локальный временный файл, если он находится в UPLOAD_TMP_DIR
+            # или имеет префикс 'upload_'. Это предотвращает накопление /tmp.
+            try:
+                if state in (TransferState.COMPLETED, TransferState.CANCELLED, TransferState.FAILED):
+                    src = t.get("source_path_server")
+                    if src:
+                        try:
+                            tmp_dir = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+                            bname = os.path.basename(src)
+                            if src.startswith(tmp_dir) or bname.startswith("upload_"):
+                                if os.path.exists(src):
+                                    os.remove(src)
+                        except Exception:
+                            # не критично — просто логируем при необходимости в более верхнем слое
+                            pass
+                    # Также можно удалить dest_path если он внутри tmp
+                    dest = t.get("dest_path")
+                    if dest:
+                        try:
+                            tmp_dir = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+                            dbname = os.path.basename(dest)
+                            if dest.startswith(tmp_dir) or dbname.startswith("upload_"):
+                                if os.path.exists(dest):
+                                    os.remove(dest)
+                        except Exception:
+                            pass
+            except Exception:
+                # Защитный catch на случай непредвиденных ошибок при очистке
+                pass
         # Уведомляем ожидающие корутины о смене состояния
         try:
             cond = self._conds.get(transfer_id)
@@ -174,6 +215,11 @@ class TransfersManager:
                     if transfer_id in self._conds:
                         # нельзя дождаться notify, просто удалить
                         del self._conds[transfer_id]
+                except Exception:
+                    pass
+                try:
+                    if transfer_id in self._file_locks:
+                        del self._file_locks[transfer_id]
                 except Exception:
                     pass
                 return True
