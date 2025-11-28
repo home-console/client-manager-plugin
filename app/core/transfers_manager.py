@@ -1,5 +1,6 @@
 import time
 import uuid
+import asyncio
 from typing import Dict, Optional, Any
 
 
@@ -19,6 +20,8 @@ class TransfersManager:
         self.transfers: Dict[str, Dict[str, Any]] = {}
         from asyncio import Lock
         self._lock = Lock()
+        # Условные объекты для ожидания изменений состояния конкретного трансфера
+        self._conds: Dict[str, asyncio.Condition] = {}
 
     async def create_upload(self, client_id: str, path: str, size: Optional[int] = None, sha256: Optional[str] = None, direction: str = "download") -> str:
         transfer_id = str(uuid.uuid4())
@@ -36,6 +39,8 @@ class TransfersManager:
                 "direction": direction,
                 "dest_path": None,
             }
+            # Создаём условие для этого трансфера, чтобы другие корутины могли ждать изменений
+            self._conds[transfer_id] = asyncio.Condition()
         return transfer_id
 
     def get(self, transfer_id: str) -> Optional[Dict[str, Any]]:
@@ -50,6 +55,14 @@ class TransfersManager:
             if state:
                 t["state"] = state
             t["updated_at"] = time.time()
+        # Уведомляем ожидающие о смене состояния/прогресса
+        try:
+            cond = self._conds.get(transfer_id)
+            if cond:
+                async with cond:
+                    cond.notify_all()
+        except Exception:
+            pass
 
     async def set_state(self, transfer_id: str, state: str) -> None:
         async with self._lock:
@@ -58,6 +71,14 @@ class TransfersManager:
                 return
             t["state"] = state
             t["updated_at"] = time.time()
+        # Уведомляем ожидающие корутины о смене состояния
+        try:
+            cond = self._conds.get(transfer_id)
+            if cond:
+                async with cond:
+                    cond.notify_all()
+        except Exception:
+            pass
 
     async def pause(self, transfer_id: str) -> None:
         await self.set_state(transfer_id, TransferState.PAUSED)
@@ -96,5 +117,66 @@ class TransfersManager:
 
     def list_by_client(self, client_id: str) -> Dict[str, Dict[str, Any]]:
         return {tid: t for tid, t in self.transfers.items() if t.get("client_id") == client_id}
+
+    async def wait_for_state(self, transfer_id: str, desired_states: list[str], timeout: Optional[float] = None) -> str:
+        """Ожидание перехода трансфера в одно из состояний `desired_states`.
+
+        Возвращает итоговое состояние или бросает TimeoutError при таймауте.
+        """
+        # Быстрая проверка
+        t = self.get(transfer_id)
+        if not t:
+            raise KeyError("Transfer not found")
+        if str(t.get("state")) in desired_states:
+            return str(t.get("state"))
+
+        cond = self._conds.get(transfer_id)
+        if not cond:
+            # создаём условие если его вдруг нет
+            from asyncio import Condition
+            cond = Condition()
+            self._conds[transfer_id] = cond
+
+        import asyncio
+        start = asyncio.get_event_loop().time()
+        deadline = start + timeout if timeout else None
+
+        async with cond:
+            while True:
+                t = self.get(transfer_id)
+                if not t:
+                    raise KeyError("Transfer removed while waiting")
+                state = str(t.get("state"))
+                if state in desired_states:
+                    return state
+                now = asyncio.get_event_loop().time()
+                if deadline and now >= deadline:
+                    raise TimeoutError("Timeout waiting for transfer state")
+                # вычислим оставшееся время для wait
+                wait_for = None
+                if deadline:
+                    wait_for = max(0.1, deadline - now)
+                try:
+                    await asyncio.wait_for(cond.wait(), timeout=wait_for)
+                except asyncio.TimeoutError:
+                    # loop around and recheck
+                    continue
+
+    async def delete_transfer(self, transfer_id: str) -> bool:
+        """Удалить трансфер и связанное условие ожидания. Возвращает True если удалено."""
+        async with self._lock:
+            if transfer_id in self.transfers:
+                try:
+                    del self.transfers[transfer_id]
+                except KeyError:
+                    pass
+                try:
+                    if transfer_id in self._conds:
+                        # нельзя дождаться notify, просто удалить
+                        del self._conds[transfer_id]
+                except Exception:
+                    pass
+                return True
+        return False
 
 

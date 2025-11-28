@@ -129,8 +129,10 @@ class EncryptionService:
                 if client_id != "unknown":
                     # Зарегистрированные клиенты - используем обычный механизм
                     state = self.get_encryption_state(client_id)
-                    
-                    if seq <= state.get("seq_in", 0):
+                    cur = int(state.get("seq_in", 0))
+                    logger.debug(f"🔢 decrypt: client={client_id} incoming_seq={seq} stored_seq_in={cur}")
+                    if seq <= cur:
+                        logger.warning(f"⚠️ Replay detected: client={client_id} incoming_seq={seq} <= stored_seq_in={cur}")
                         raise ValueError("Replay detected")
                     
                     state["seq_in"] = seq
@@ -146,12 +148,14 @@ class EncryptionService:
                     unknown_state = self.unknown_client_seqs[unknown_key]
                     
                     # Проверка replay для unknown клиента
-                    if seq <= unknown_state.get("seq_in", 0):
-                        logger.warning(f"⚠️ Replay detected для unknown клиента (seq={seq} <= last_seq={unknown_state.get('seq_in', 0)})")
+                    cur = int(unknown_state.get("seq_in", 0))
+                    logger.debug(f"🔢 decrypt: unknown client={client_id} incoming_seq={seq} stored_unknown_seq={cur}")
+                    if seq <= cur:
+                        logger.warning(f"⚠️ Replay detected для unknown клиента (client={client_id} incoming_seq={seq} <= last_seq={cur})")
                         raise ValueError("Replay detected")
-                    
+
                     unknown_state["seq_in"] = seq
-                    logger.debug(f"✅ Replay protection для unknown клиента: seq={seq}")
+                    logger.debug(f"✅ Replay protection для unknown клиента: client={client_id} seq={seq}")
                 
                 del message["data"]["_seq"]
             

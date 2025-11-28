@@ -911,16 +911,88 @@ class WebSocketHandler:
         return summary
     
     async def download_file_from_device(self, device_id: str, remote_path: str) -> bytes:
-        """Скачивание файла с устройства через агента"""
-        # ВРЕМЕННАЯ ЗАГЛУШКА: Файловая передача через команды ограничена
-        # TODO: Реализовать настоящую передачу файлов через WebSocket
-        raise Exception("Передача файлов пока не реализована. Используйте команды напрямую.")
+        """Скачивание файла с устройства через агента через WebSocket"""
+        # 1. Создаём трансфер в менеджере (direction = download)
+        transfer_id = await self.transfers.create_upload(device_id, remote_path, None, None, "download")
+        # Устанавливаем состояние в progress
+        from .transfers_manager import TransferState
+        await self.transfers.set_state(transfer_id, TransferState.IN_PROGRESS)
+
+        # 2. Устанавливаем временный путь хранения на сервере
+        import tempfile, os
+        tmpfd, tmp_path = tempfile.mkstemp(prefix=f"download_{transfer_id}_", suffix=".bin")
+        os.close(tmpfd)
+        self.transfers.transfers[transfer_id]["dest_path"] = tmp_path
+
+        # 3. Отправляем сообщение клиенту (совместимо с клиентским протоколом)
+        start_msg = {
+            "type": "file_download_start",
+            "data": {
+                "transfer_id": transfer_id,
+                "path": remote_path,
+                "chunk_size": 1 << 20,
+                "start_offset": 0,
+            },
+        }
+        encrypted = await self.encryption_service.encrypt_message(start_msg, device_id)
+        await self.websocket_manager.send_message(device_id, encrypted)
+
+        # 4. Ждём завершения трансфера (event-based) с таймаутом
+        timeout = getattr(settings, "file_transfer_timeout", 120)
+        try:
+            final_state = await self.transfers.wait_for_state(transfer_id, [TransferState.COMPLETED], timeout=int(timeout))
+        except KeyError:
+            raise Exception("Трансфер удалён неожиданно")
+        except TimeoutError:
+            raise Exception("Таймаут ожидания завершения файлового трансфера")
+
+        # Проверим итоговое состояние
+        t = self.transfers.get(transfer_id)
+        if not t:
+            raise Exception("Трансфер удалён неожиданно")
+        state = t.get("state")
+        if state == TransferState.COMPLETED:
+            try:
+                with open(t.get("dest_path"), "rb") as f:
+                    data = f.read()
+                return data
+            except Exception as e:
+                raise
+        if state in (TransferState.FAILED, TransferState.CANCELLED):
+            raise Exception(f"Transfer {transfer_id} ended with state {state}")
+        # На всякий случай
+        raise Exception(f"Transfer {transfer_id} finished in unexpected state: {state}")
 
     async def upload_file_to_device(self, device_id: str, local_path: str, file_data: bytes):
-        """Загрузка файла на устройство через агента"""
-        # ВРЕМЕННАЯ ЗАГЛУШКА: Файловая передача через команды ограничена
-        # TODO: Реализовать настоящую передачу файлов через WebSocket
-        raise Exception("Передача файлов пока не реализована. Используйте команды напрямую.")
+        """Загрузка файла на устройство через агента через WebSocket"""
+        # 1. Создаём трансфер (direction = upload)
+        transfer_id = await self.transfers.create_upload(device_id, local_path, len(file_data), None, "upload")
+        from .transfers_manager import TransferState
+        await self.transfers.set_state(transfer_id, TransferState.IN_PROGRESS)
+
+        # 2. Запишем байты во временный файл и используем существующий код отправки
+        import tempfile, os
+        fd, tmp_path = tempfile.mkstemp(prefix=f"upload_{transfer_id}_", suffix=".bin")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(file_data)
+
+            # Используем FileTransferHandler.send_upload_from_server(client_id, transfer_id, src_path)
+            await self.file_handler.send_upload_from_server(device_id, transfer_id, tmp_path)
+            # Ожидаем завершения трансфера (event-based)
+            timeout = getattr(settings, "file_transfer_timeout", 120)
+            try:
+                await self.transfers.wait_for_state(transfer_id, [TransferState.COMPLETED], timeout=int(timeout))
+            except Exception as e:
+                t = self.transfers.get(transfer_id)
+                state = t.get("state") if t else "unknown"
+                raise Exception(f"Upload failed or timed out, final state: {state}")
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        return True
 
     async def delete_file_on_device(self, device_id: str, remote_path: str):
         """Удаление файла на устройстве"""

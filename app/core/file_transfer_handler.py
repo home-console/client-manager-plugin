@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import os
+import logging
 from typing import Any, Dict
 
 from fastapi import WebSocket
@@ -327,27 +328,65 @@ class FileTransferHandler:
         encrypted = await self.encryption_service.encrypt_message(done, client_id)
         await self.websocket_manager.send_message(client_id, encrypted)
 
-    async def send_upload_from_server(self, client_id: str, transfer_id: str, src_path: str, chunk_size: int = 1 << 20):
+    async def send_upload_from_server(
+        self,
+        client_id: str,
+        transfer_id: str,
+        src_path: str,
+        start_offset: int = 0,
+        chunk_size: int = 1 << 20,
+    ):
         """Отправка файла с сервера на клиент (upload-to-client)."""
+        logger = logging.getLogger(__name__)
         if not os.path.exists(src_path):
+            logger.error(f"❌ Source file not found for transfer {transfer_id}: {src_path}")
+            try:
+                await self.transfers.set_state(transfer_id, TransferState.FAILED)
+            except Exception:
+                pass
             return
+        if chunk_size <= 0:
+            chunk_size = 1 << 20
         size = os.path.getsize(src_path)
+        try:
+            self.transfers.transfers[transfer_id]["size"] = size
+        except Exception:
+            pass
         # Старт
+        logger.info(f"📤 Preparing upload to {client_id} transfer={transfer_id} src={src_path} size={size} start_offset={start_offset} chunk_size={chunk_size}")
         start = {
             "type": "file_upload_start",
             "data": {
                 "transfer_id": transfer_id,
                 "path": self.transfers.get(transfer_id).get("path"),
                 "chunk_size": chunk_size,
-                "start_offset": 0,
+                "start_offset": start_offset,
                 "size": size,
             },
         }
-        encrypted = await self.encryption_service.encrypt_message(start, client_id)
-        await self.websocket_manager.send_message(client_id, encrypted)
+        # Логируем попытку отправки стартового сообщения и результат отправки
+        try:
+            encrypted = await self.encryption_service.encrypt_message(start, client_id)
+        except Exception as e:
+            logger = __import__('logging').getLogger(__name__)
+            logger.error(f"❌ Ошибка шифрования start_msg для {client_id}, transfer {transfer_id}: {e}")
+            return
+        try:
+            sent_ok = await self.websocket_manager.send_message(client_id, encrypted)
+            logger = __import__('logging').getLogger(__name__)
+            if not sent_ok:
+                logger.warning(f"❗ Start message NOT sent to {client_id} (transfer={transfer_id})")
+            else:
+                logger.info(f"📤 Start message sent to {client_id} (transfer={transfer_id}, size={size})")
+        except Exception as e:
+            logger = __import__('logging').getLogger(__name__)
+            logger.error(f"❌ Ошибка отправки start_msg клиенту {client_id} (transfer={transfer_id}): {e}")
+            return
 
-        sent = 0
+        sent = start_offset
         with open(src_path, "rb") as f:
+            if start_offset:
+                f.seek(start_offset)
             while True:
                 chunk = f.read(chunk_size)
                 if not chunk:
@@ -364,12 +403,48 @@ class FileTransferHandler:
                         "sha256": hashlib.sha256(chunk).hexdigest(),
                     },
                 }
-                enc = await self.encryption_service.encrypt_message(msg, client_id)
-                await self.websocket_manager.send_message(client_id, enc)
+                # Шифруем и отправляем чанки по одному, логируя результат
+                try:
+                    enc = await self.encryption_service.encrypt_message(msg, client_id)
+                except Exception as e:
+                    logger = __import__('logging').getLogger(__name__)
+                    logger.error(f"❌ Ошибка шифрования чанка {sent // chunk_size} для {client_id} (transfer={transfer_id}): {e})")
+                    return
+                try:
+                    ok = await self.websocket_manager.send_message(client_id, enc)
+                    logger = __import__('logging').getLogger(__name__)
+                    if not ok:
+                        logger.warning(f"❗ Chunk send FAILED for {client_id} chunk_index={sent // chunk_size} transfer={transfer_id}")
+                        # Если не удалось отправить — прекращаем попытки
+                        return
+                    else:
+                        logger.debug(f"✅ Chunk sent to {client_id} chunk_index={sent // chunk_size} transfer={transfer_id} bytes_sent={len(chunk)}")
+                except Exception as e:
+                    logger = __import__('logging').getLogger(__name__)
+                    logger.error(f"❌ Ошибка отправки чанка клиенту {client_id} chunk_index={sent // chunk_size} transfer={transfer_id}: {e}")
+                    return
                 sent += len(chunk)
+                try:
+                    await self.transfers.update_progress(transfer_id, sent, state=TransferState.IN_PROGRESS)
+                except Exception:
+                    pass
+
+        try:
+            await self.transfers.update_progress(transfer_id, sent, state=TransferState.COMPLETED)
+        except Exception:
+            await self.transfers.set_state(transfer_id, TransferState.COMPLETED)
 
         eof = {"type": "file_eof", "data": {"transfer_id": transfer_id}}
-        enc = await self.encryption_service.encrypt_message(eof, client_id)
-        await self.websocket_manager.send_message(client_id, enc)
+        try:
+            enc = await self.encryption_service.encrypt_message(eof, client_id)
+            ok = await self.websocket_manager.send_message(client_id, enc)
+            logger = __import__('logging').getLogger(__name__)
+            if ok:
+                logger.info(f"📤 EOF sent to {client_id} transfer={transfer_id}")
+            else:
+                logger.warning(f"❗ EOF NOT sent to {client_id} transfer={transfer_id}")
+        except Exception as e:
+            logger = __import__('logging').getLogger(__name__)
+            logger.error(f"❌ Ошибка отправки EOF для {client_id} transfer={transfer_id}: {e}")
 
 

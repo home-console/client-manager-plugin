@@ -34,3 +34,4 @@ async def install_remote_client(request: SSHInstallRequest) -> SSHInstallRespons
         logger.exception("Неожиданная ошибка установки remote_client")
         raise HTTPException(status_code=500, detail="Не удалось установить remote_client") from exc
 
+

@@ -145,6 +145,13 @@ def setup_logging(level: str = "INFO", json_format: bool = True):
     
     # Устанавливаем уровень
     root_logger.setLevel(getattr(logging, level.upper()))
+    # Подавляем детальные access-логи от uvicorn в INFO, чтобы избежать флуда
+    try:
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    except Exception:
+        pass
     
     return root_logger
 
@@ -184,25 +191,47 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         is_health_check = request.url.path in ["/health", "/api/health"] and request.method == "GET" and not log_health_checks
 
         # Автоматические запросы веб-интерфейса (обновление списка клиентов каждые 5 секунд)
+        # Теперь учитываем запросы и к конкретным клиентам, т.е. /api/clients/*
+        path = request.url.path or ""
         is_auto_refresh = (
-            request.url.path in ["/api/clients"] and
+            path.startswith("/api/clients") and
             request.method == "GET" and
             not log_api_clients
         )
 
-        # Пропускаем логирование если это автоматический запрос
-        skip_logging = is_health_check or is_auto_refresh
+        # Частые polling-запросы статуса трансферов (например /api/files/transfers/{id}/status)
+        is_transfer_status = False
+        try:
+            # Простая проверка: путь начинается с /api/files/transfers и содержит /status
+            if path.startswith("/api/files/transfers") and request.method == "GET":
+                # Любые GET к /api/files/transfers/* считаем частыми polling-запросами
+                is_transfer_status = True
+        except Exception:
+            is_transfer_status = False
+
+        # Пропускаем логирование если это автоматический или частый polling запрос
+        skip_logging = is_health_check or is_auto_refresh or is_transfer_status
 
         if not skip_logging:
             # Логируем входящий запрос
             logger = get_logger(__name__)
-            logger.info(
-                "Incoming request",
-                method=request.method,
-                path=request.url.path,
-                client_ip=request.client.host if request.client else None,
-                correlation_id=correlation_id
-            )
+            # Для автоматических/частых запросов используем debug, чтобы не засорять INFO
+            if is_auto_refresh:
+                logger.debug(
+                    "Incoming auto request",
+                    method=request.method,
+                    path=request.url.path,
+                    client_ip=request.client.host if request.client else None,
+                    correlation_id=correlation_id
+                )
+            else:
+                logger.info(
+                    "Incoming request",
+                    method=request.method,
+                    path=request.url.path,
+                    client_ip=request.client.host if request.client else None,
+                    correlation_id=correlation_id
+                )
 
         # Обрабатываем запрос
         response = await call_next(request)
@@ -213,13 +242,22 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         if not skip_logging:
             # Логируем ответ
             logger = get_logger(__name__)
-            logger.info(
-                "Request completed",
-                method=request.method,
-                path=request.url.path,
-                status_code=response.status_code,
-                correlation_id=correlation_id
-            )
+            if is_auto_refresh:
+                logger.debug(
+                    "Auto request completed",
+                    method=request.method,
+                    path=request.url.path,
+                    status_code=response.status_code,
+                    correlation_id=correlation_id
+                )
+            else:
+                logger.info(
+                    "Request completed",
+                    method=request.method,
+                    path=request.url.path,
+                    status_code=response.status_code,
+                    correlation_id=correlation_id
+                )
         elif is_health_check and response.status_code >= 400:
             # Логируем только проблемные health-чек запросы
             logger = get_logger(__name__)
