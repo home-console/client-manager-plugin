@@ -30,6 +30,7 @@ from .routes import (
     cloud,
     # terminal router
     terminal,
+    audit_queue,
 )
 from .config import settings, init_settings
 from .utils.structured_logger import setup_logging, get_logger, LoggingMiddleware
@@ -64,6 +65,12 @@ async def lifespan(app: FastAPI):
         logger.info("AuthService инициализирован для админских WS")
     except Exception as e:
         logger.warning(f"AuthService не инициализирован: {e}")
+    # Запуск фоновых задач обработчика (монитор core, флешер очереди аудита)
+    try:
+        await handler.start_background_tasks()
+        logger.info("Background tasks started: core monitor and audit flusher")
+    except Exception as e:
+        logger.warning(f"Не удалось запустить фоновые задачи обработчика: {e}")
     # Инициализация облачных сервисов
     logger.info("Облачные сервисы инициализированы")
     
@@ -224,6 +231,13 @@ def create_app() -> FastAPI:
     app.include_router(universal_commands.router)
     app.include_router(cloud.router, prefix="/api/cloud", tags=["Cloud Services"])
     app.include_router(terminal.router)
+    app.include_router(audit_queue.router)
+    # internal admin messaging
+    try:
+        from .routes import admin_messages
+        app.include_router(admin_messages.router)
+    except Exception:
+        pass
 
     return app
 

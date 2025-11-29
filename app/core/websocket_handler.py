@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import time
+import threading
 # import os
 import secrets
 import base64
@@ -48,6 +49,22 @@ class WebSocketHandler:
         self._trusted_clients = set()
         # Сессии терминалов: session_id -> {"agent_id": str, "frontend_ws": WebSocket | None}
         self.terminal_sessions: Dict[str, dict] = {}
+        # Core reachability flag and pending audit queue (thread-safe)
+        self.core_reachable = False
+        self._audit_pending = []  # list of payload dicts
+        self._audit_lock = threading.Lock()
+        self._core_monitor_task = None
+        self._audit_flusher_task = None
+        # File-backed persistence (no SQL). Use JSONL queue; fallback to in-memory.
+        self.fs_available = False
+        try:
+            from .core import audit_queue_fs as _fs  # type: ignore
+            _fs.ensure_queue_dir()
+            self._fs = _fs
+            self.fs_available = True
+            logger.info("FS persistence enabled for audit queue (JSONL)")
+        except Exception:
+            logger.info("FS persistence unavailable - using in-memory audit queue")
         
         # Синхронизация секретов (websocket_handler передается после инициализации)
         from .secrets_sync import SecretsSyncService
@@ -128,6 +145,8 @@ class WebSocketHandler:
         self.message_router.register_handler('terminal.output', self._handle_terminal_output)
         self.message_router.register_handler('terminal.started', self._handle_terminal_started)
         self.message_router.register_handler('terminal.stopped', self._handle_terminal_stopped)
+        # Agent can report errors (e.g. when session was lost on agent restart)
+        self.message_router.register_handler('terminal.input.error', self._handle_terminal_input_error)
         
         # Обработчик запроса TLS downgrade
         self.message_router.register_handler('tls_downgrade_request', self._handle_tls_downgrade_request)
@@ -805,12 +824,13 @@ class WebSocketHandler:
                 "ts": time.time(),
                 "record_path": rec_path,
             }
+            # Use thread to avoid blocking; _send_audit_to_core will enqueue if core unreachable
             await asyncio.to_thread(self._send_audit_to_core, payload)
         except Exception:
             logger.exception("Ошибка отправки аудита в core_service при создании сессии")
 
-    def _send_audit_to_core(self, payload: dict):
-        """Synchronous helper to POST audit to core admin api (run in thread)."""
+    def _post_audit_sync(self, payload: dict) -> bool:
+        """Synchronous POST of audit payload to core admin API. Returns True on success."""
         try:
             import os, json, http.client
             from urllib.parse import urlparse as _parse
@@ -837,10 +857,47 @@ class WebSocketHandler:
                 text = data.decode("utf-8") if data else ""
             except Exception:
                 text = ''
-            if resp.status < 200 or resp.status >= 300:
+            if 200 <= resp.status < 300:
+                return True
+            else:
                 logger.debug(f"Audit POST returned {resp.status}: {text}")
+                return False
         except Exception:
-            logger.exception("_send_audit_to_core failed")
+            logger.exception("_post_audit_sync failed")
+            return False
+
+    def _enqueue_audit_sync(self, payload: dict):
+        """Thread-safe enqueue of audit payload for later delivery."""
+        try:
+            if getattr(self, 'fs_available', False):
+                try:
+                    _id = self._fs.enqueue(payload)
+                    logger.info(f"Audit persisted to FS (id={_id})")
+                    return
+                except Exception:
+                    logger.exception("Failed to persist audit to FS, falling back to memory")
+
+            with self._audit_lock:
+                self._audit_pending.append({"payload": payload, "queued_at": time.time()})
+            logger.info("Audit queued: core unreachable, stored locally until core is reachable")
+        except Exception:
+            logger.exception("Failed to enqueue audit payload")
+
+    def _send_audit_to_core(self, payload: dict):
+        """Synchronous helper wrapper called in a thread. Enqueues if core unreachable, otherwise POSTs."""
+        try:
+            # If attribute core_reachable exists and is False, enqueue
+            if not getattr(self, 'core_reachable', False):
+                # mark as queued and return
+                self._enqueue_audit_sync(payload)
+                return
+            # otherwise attempt to post
+            ok = self._post_audit_sync(payload)
+            if not ok:
+                # On failure, enqueue for retry
+                self._enqueue_audit_sync(payload)
+        except Exception:
+            logger.exception("_send_audit_to_core wrapper failed")
 
     async def attach_frontend_to_session(self, session_id: str, websocket: WebSocket):
         sess = self.terminal_sessions.get(session_id)
@@ -988,6 +1045,39 @@ class WebSocketHandler:
             await self.detach_session(session_id)
         except Exception as e:
             logger.error(f"Ошибка при обработке terminal.stopped: {e}")
+
+    async def _handle_terminal_input_error(self, websocket: WebSocket, message: dict, client_id: str):
+        """Handle error reports from agent about terminal input (e.g. unknown session).
+
+        Expects message.data = {"session_id": "...", "error": "reason"}
+        Forwards a control message to the frontend attached to that session (if any) and detaches the session mapping.
+        """
+        try:
+            data = message.get('data', {})
+            session_id = data.get('session_id')
+            err = data.get('error') or data.get('message') or 'unknown error'
+            if not session_id:
+                logger.debug("terminal.input.error without session_id from agent")
+                return
+            sess = self.terminal_sessions.get(session_id)
+            if not sess:
+                logger.debug(f"Received terminal.input.error for unknown session {session_id}")
+                return
+            fw = sess.get('frontend_ws')
+            # notify frontend if attached
+            if fw:
+                try:
+                    import json
+                    await fw.send_text(json.dumps({"type": "session.unknown", "session_id": session_id, "message": f"Agent reported error: {err}"}))
+                except Exception:
+                    logger.exception("Failed to send session.unknown to frontend")
+            # detach session mapping to avoid further forwarding
+            try:
+                await self.detach_session(session_id)
+            except Exception:
+                logger.exception(f"Failed to detach session {session_id} after agent reported input error")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке terminal.input.error: {e}")
     
     async def _stats_middleware(self, websocket: WebSocket, message: dict, client_id: str) -> dict:
         """Middleware для обновления статистики"""
@@ -1210,6 +1300,122 @@ class WebSocketHandler:
                 summary["cancelled"] += 1
             summary["bytes_received"] += int(t.get("bytes_received", 0))
         return summary
+
+    async def start_background_tasks(self):
+        """Запуск фоновых задач: монитор доступности core и флешер очереди аудита."""
+        # Create tasks only once
+        if not getattr(self, '_core_monitor_task', None):
+            self._core_monitor_task = asyncio.create_task(self._core_monitor_loop())
+        if not getattr(self, '_audit_flusher_task', None):
+            self._audit_flusher_task = asyncio.create_task(self._audit_flusher_loop())
+
+    async def _core_monitor_loop(self):
+        """Периодически проверяет доступность core и обновляет флаг core_reachable."""
+        import os
+        from urllib.parse import urlparse as _parse
+        backoff = 1
+        while True:
+            try:
+                reachable = await asyncio.to_thread(self._is_core_reachable_sync)
+                if reachable and not self.core_reachable:
+                    logger.info("Core reachable: will attempt to flush queued audits")
+                if not reachable and self.core_reachable:
+                    logger.warning("Core became unreachable: audits will be queued")
+                self.core_reachable = bool(reachable)
+                # reset backoff on success
+                if reachable:
+                    backoff = 1
+                    await asyncio.sleep(5)
+                else:
+                    # exponential backoff up to 60s
+                    await asyncio.sleep(min(backoff, 60))
+                    backoff = min(backoff * 2, 60)
+            except Exception:
+                logger.exception("Error in core monitor loop")
+                await asyncio.sleep(5)
+
+    def _is_core_reachable_sync(self) -> bool:
+        """Synchronous check if CORE_ADMIN_URL/health (or root) responds 200."""
+        try:
+            import os, http.client
+            from urllib.parse import urlparse as _parse
+            base = os.getenv("CORE_ADMIN_URL", "http://127.0.0.1:11000")
+            b = _parse(base)
+            scheme = (b.scheme or "http").lower()
+            host = b.hostname or "127.0.0.1"
+            port = b.port or (443 if scheme == "https" else 80)
+            # prefer /health
+            path = "/health"
+            if scheme == "https":
+                import ssl
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                conn = http.client.HTTPSConnection(host, port, timeout=3, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(host, port, timeout=3)
+            conn.request("GET", path, headers={"User-Agent": "client_manager/health-check"})
+            resp = conn.getresponse()
+            status = resp.status
+            # accept 2xx as reachable
+            return 200 <= status < 300
+        except Exception:
+            return False
+
+    async def _audit_flusher_loop(self):
+        """Фоновая задача, пытающаяся отправить все накопленные audit-события, когда core reachable."""
+        while True:
+            try:
+                if getattr(self, 'core_reachable', False):
+                    # If DB available, prefer to pull pending rows from DB
+                    if getattr(self, 'fs_available', False):
+                        rows = await asyncio.to_thread(self._fs.fetch_pending, 100)
+                        if not rows:
+                            await asyncio.sleep(2)
+                            continue
+                        for row in rows:
+                            row_id = row.get('id')
+                            payload = row.get('payload')
+                            ok = await asyncio.to_thread(self._post_audit_sync, payload)
+                            if ok:
+                                # mark as sent in FS
+                                await asyncio.to_thread(self._fs.mark_sent, row_id)
+                                logger.info(f"Queued audit row {row_id} successfully posted to core")
+                            else:
+                                logger.debug(f"Failed to POST queued audit row {row_id}, will retry later")
+                                # stop processing to avoid tight retry loop
+                                await asyncio.sleep(2)
+                                break
+                        await asyncio.sleep(1)
+                        continue
+
+                    # drain in-memory pending queue safely
+                    with self._audit_lock:
+                        pending = list(self._audit_pending)
+                        self._audit_pending.clear()
+
+                    if not pending:
+                        await asyncio.sleep(2)
+                        continue
+
+                    for item in pending:
+                        payload = item.get('payload')
+                        ok = await asyncio.to_thread(self._post_audit_sync, payload)
+                        if not ok:
+                            # re-enqueue and break to avoid tight loop
+                            with self._audit_lock:
+                                self._audit_pending.append(item)
+                            logger.debug("Requeued audit after failed POST, will retry later")
+                            await asyncio.sleep(2)
+                            break
+                        else:
+                            logger.info("Queued audit successfully posted to core")
+                    await asyncio.sleep(1)
+                else:
+                    await asyncio.sleep(5)
+            except Exception:
+                logger.exception("Error in audit flusher loop")
+                await asyncio.sleep(5)
     
     async def download_file_from_device(self, device_id: str, remote_path: str) -> bytes:
         """Скачивание файла с устройства через агента через WebSocket"""

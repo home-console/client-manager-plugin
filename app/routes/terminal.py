@@ -65,7 +65,7 @@ async def start_terminal(client_id: str, request: Request, handler=Depends(get_w
         "type": "terminal.start",
         "data": {
             "session_id": session_id,
-            "command": "/bin/bash",
+            "command": "",
             "cols": 80,
             "rows": 24,
         }
