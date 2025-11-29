@@ -127,6 +127,9 @@ class WebSocketHandler:
         self.message_router.register_handler('command_cancel', self.command_handler.handle_command_cancel)
         self.message_router.register_handler('command_cancel_ack', self.command_handler.handle_command_cancel_ack)
 
+        # Admin -> client actions (install plugins, run maintenance)
+        self.message_router.register_handler('admin.install_service', self._handle_admin_install)
+
         # Обработчики файловых трансферов (WS)
         self.message_router.register_handler('file_chunk', self.file_handler.handle_file_chunk)
         self.message_router.register_handler('file_eof', self.file_handler.handle_file_eof)
@@ -1078,6 +1081,61 @@ class WebSocketHandler:
                 logger.exception(f"Failed to detach session {session_id} after agent reported input error")
         except Exception as e:
             logger.error(f"Ошибка при обработке terminal.input.error: {e}")
+
+    async def _handle_admin_install(self, websocket: WebSocket, message: dict, client_id: str):
+        """Handle admin.install_service messages forwarded from core.
+
+        Expected message.data: { install_token, dry_run, socket, sessions_dir, token_file }
+        This method will call existing installers (SSH installer) if appropriate.
+        """
+        try:
+            data = message.get('data', {}) or {}
+            install_token = data.get('install_token')
+            dry_run = bool(data.get('dry_run', True))
+
+            # For MVP we simply echo back a dry-run response and, on real run, attempt SSH install
+            if dry_run:
+                resp = { 'ok': True, 'dry_run': True, 'info': 'Dry-run supported. No changes applied.' }
+                await websocket.send_text(__import__('json').dumps({'type': 'admin.install_result', 'data': resp}))
+                return
+
+            # Real install: attempt to use SSH installer if payload contains ssh params
+            ssh_params = data.get('ssh') or {}
+            if ssh_params:
+                # Lazy import SSH installer
+                try:
+                    from .installers.ssh_installer import SSHInstaller, SSHInstallError
+                    installer = SSHInstaller(settings)
+                    # Build request-like object (we adapt to the installer API)
+                    req = type('Req', (), {})()
+                    req.host = ssh_params.get('host')
+                    req.port = int(ssh_params.get('port', 22))
+                    req.username = ssh_params.get('username')
+                    req.password = ssh_params.get('password')
+                    req.private_key = ssh_params.get('private_key')
+                    req.passphrase = ssh_params.get('passphrase')
+                    req.install_dir = ssh_params.get('install_dir')
+                    req.use_sudo = ssh_params.get('use_sudo', True)
+                    req.timeout = int(ssh_params.get('timeout', 120))
+                    req.extra_install_commands = ssh_params.get('extra_install_commands', [])
+                    req.create_service = ssh_params.get('create_service', True)
+                    # Run installer in thread
+                    loop = __import__('asyncio').get_event_loop()
+                    result = await loop.run_in_executor(None, installer.install_remote_client, req)
+                    await websocket.send_text(__import__('json').dumps({'type': 'admin.install_result', 'data': {'ok': True, 'result': result}}))
+                    return
+                except Exception as e:
+                    await websocket.send_text(__import__('json').dumps({'type': 'admin.install_result', 'data': {'ok': False, 'error': str(e)}}))
+                    return
+
+            # If no known installer found, return not implemented
+            await websocket.send_text(__import__('json').dumps({'type': 'admin.install_result', 'data': {'ok': False, 'error': 'no installer params provided'}}))
+        except Exception as e:
+            logger.exception("Ошибка в _handle_admin_install")
+            try:
+                await websocket.send_text(__import__('json').dumps({'type': 'admin.install_result', 'data': {'ok': False, 'error': str(e)}}))
+            except Exception:
+                pass
     
     async def _stats_middleware(self, websocket: WebSocket, message: dict, client_id: str) -> dict:
         """Middleware для обновления статистики"""
