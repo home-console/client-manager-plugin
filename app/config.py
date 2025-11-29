@@ -56,8 +56,9 @@ class Settings(BaseSettings):
     log_format: str = Field(default="json", env="LOG_FORMAT")
     
     # CORS
+    # CORS: по-умолчанию локальный фронтенд (без wildcard '*')
     cors_origins: List[str] = Field(
-        default=["http://localhost:*", "https://localhost:*"],
+        default=["http://localhost:3000"],
         env="CORS_ORIGINS"
     )
     
@@ -81,6 +82,16 @@ class Settings(BaseSettings):
     
     # TLS downgrade (⚠️ НЕ ВКЛЮЧАЙТЕ В ПРОДАКШЕНЕ!)
     allow_tls_downgrade: bool = Field(default=False, env="ALLOW_TLS_DOWNGRADE")
+
+    # S3 / MinIO settings for terminal recordings
+    s3_endpoint: str | None = Field(default=None, env="S3_ENDPOINT")
+    s3_access_key_id: str | None = Field(default=None, env="S3_ACCESS_KEY_ID")
+    s3_secret_access_key: str | None = Field(default=None, env="S3_SECRET_ACCESS_KEY")
+    s3_bucket: str | None = Field(default=None, env="S3_BUCKET")
+    s3_region: str | None = Field(default="us-east-1", env="S3_REGION")
+    s3_use_ssl: bool = Field(default=True, env="S3_USE_SSL")
+    s3_presign_expiry_seconds: int = Field(default=3600, env="S3_PRESIGN_EXPIRY_SECONDS")
+    recordings_retention_days: int = Field(default=30, env="RECORDINGS_RETENTION_DAYS")
 
     # Remote client установки через SSH
     remote_client_repo: str = Field(

@@ -13,3 +13,4 @@ httpx
 # Celery worker dependencies for PoC
 celery>=5.2
 requests
+boto3

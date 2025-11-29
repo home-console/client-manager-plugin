@@ -28,6 +28,8 @@ from .routes import (
     universal_commands,
     installations,
     cloud,
+    # terminal router
+    terminal,
 )
 from .config import settings, init_settings
 from .utils.structured_logger import setup_logging, get_logger, LoggingMiddleware
@@ -221,6 +223,7 @@ def create_app() -> FastAPI:
     app.include_router(installations.router)
     app.include_router(universal_commands.router)
     app.include_router(cloud.router, prefix="/api/cloud", tags=["Cloud Services"])
+    app.include_router(terminal.router)
 
     return app
 

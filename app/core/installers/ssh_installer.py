@@ -104,6 +104,7 @@ class SSHInstaller:
                         extra_command,
                         use_sudo=request.use_sudo,
                         timeout=request.timeout,
+                        trusted=False,
                     )
                 )
 
@@ -338,7 +339,13 @@ class SSHInstaller:
         command: str,
         use_sudo: bool,
         timeout: int,
+        *,
+        trusted: bool = True,
     ) -> CommandExecutionResult:
+        # If command is untrusted (came from external input), validate it
+        if not trusted:
+            self._validate_user_command(command)
+
         result = self._exec_command(ssh, command, use_sudo, timeout)
         if result.exit_code != 0:
             raise SSHInstallError(
@@ -346,6 +353,17 @@ class SSHInstaller:
                 f"{result.stderr.strip() or result.stdout.strip()}",
             )
         return result
+
+    def _validate_user_command(self, command: str) -> None:
+        """Conservative validation for user-provided commands.
+
+        Reject commands that contain common shell metacharacters or
+        control operators which could be used for command chaining/injection.
+        """
+        bad_tokens = [';', '&&', '||', '|', '<', '>', '`', '$(', '$']
+        for t in bad_tokens:
+            if t in command:
+                raise SSHInstallError(f"Rejected unsafe install command from user: contains '{t}'")
 
     def _run_text(
         self,
