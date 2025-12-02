@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 # Копируем только зависимости для кеша
 # requirements.txt лежит в корне репозитория
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Use BuildKit cache for pip wheels between builds
+RUN --mount=type=cache,target=/root/.cache/pip pip install --no-cache-dir -r /app/requirements.txt
 
 # Код монтируется томом в dev. На проде можно раскомментировать COPY:
 COPY . /app
