@@ -129,6 +129,8 @@ class WebSocketHandler:
 
         # Admin -> client actions (install plugins, run maintenance)
         self.message_router.register_handler('admin.install_service', self._handle_admin_install)
+        # Handler for plugin install requests forwarded from core (install Docker images / run containers)
+        self.message_router.register_handler('admin.install_plugin', self._handle_admin_install_plugin)
 
         # Обработчики файловых трансферов (WS)
         self.message_router.register_handler('file_chunk', self.file_handler.handle_file_chunk)
@@ -1134,6 +1136,119 @@ class WebSocketHandler:
             logger.exception("Ошибка в _handle_admin_install")
             try:
                 await websocket.send_text(__import__('json').dumps({'type': 'admin.install_result', 'data': {'ok': False, 'error': str(e)}}))
+            except Exception:
+                pass
+
+    async def _handle_admin_install_plugin(self, websocket: WebSocket, message: dict, client_id: str):
+        """Handle admin.install_plugin messages.
+
+        Expects message.data: { plugin_name, version, manifest, artifact_url, type, options, install_job_id }
+        For type == 'docker' we will attempt to `docker pull` the image and `docker run` it.
+        This runs in background and will POST progress callbacks to core admin callback endpoint.
+        """
+        try:
+            data = message.get('data', {}) or {}
+            plugin_name = data.get('plugin_name')
+            version = data.get('version')
+            mtype = data.get('type')
+            artifact = data.get('artifact_url') or data.get('artifact')
+            options = data.get('options') or {}
+            install_job_id = data.get('install_job_id')
+
+            # Quick validation/ack to admin frontend
+            await websocket.send_text(__import__('json').dumps({'type': 'admin.install_plugin_ack', 'data': {'ok': True, 'install_job_id': install_job_id}}))
+
+            # Run install in background so we don't block WS loop
+            async def _run_install():
+                agent_id = client_id
+                def _post_callback(status: str, logs: str = '', finished_at: str | None = None):
+                    try:
+                        import os, json, http.client
+                        from urllib.parse import urlparse as _parse
+                        base = os.getenv('CORE_ADMIN_URL', 'http://127.0.0.1:11000')
+                        b = _parse(base)
+                        scheme = (b.scheme or 'http').lower()
+                        host = b.hostname or '127.0.0.1'
+                        port = b.port or (443 if scheme == 'https' else 80)
+                        path = '/api/registry/plugins/install/callback'
+                        if scheme == 'https':
+                            import ssl
+                            ctx = ssl.create_default_context()
+                            ctx.check_hostname = False
+                            ctx.verify_mode = ssl.CERT_NONE
+                            conn = http.client.HTTPSConnection(host, port, timeout=10, context=ctx)
+                        else:
+                            conn = http.client.HTTPConnection(host, port, timeout=10)
+                        body = json.dumps({
+                            'install_job_id': install_job_id,
+                            'status': status,
+                            'logs': logs,
+                            'agent_id': agent_id,
+                            'finished_at': finished_at,
+                        }).encode('utf-8')
+                        hdrs = {'Content-Type': 'application/json'}
+                        admin_token = os.getenv('ADMIN_TOKEN', '')
+                        if admin_token:
+                            hdrs['Authorization'] = f'Bearer {admin_token}'
+                        conn.request('POST', path, body=body, headers=hdrs)
+                        resp = conn.getresponse()
+                        resp.read()
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.exception(f'Failed to post install callback: {e}')
+
+                # Start
+                _post_callback('running', 'install started')
+
+                if mtype == 'docker' and artifact:
+                    image = artifact
+                    try:
+                        import subprocess, shlex, datetime
+                        # docker pull
+                        p = subprocess.run(['docker', 'pull', image], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+                        logs = p.stdout + '\n' + p.stderr
+                        if p.returncode != 0:
+                            _post_callback('failed', f'docker pull failed:\n{logs}', datetime.datetime.utcnow().isoformat())
+                            return
+
+                        # docker run (detached)
+                        run_cmd = ['docker', 'run', '-d', '--name', f"plugin_{plugin_name}_{install_job_id[:8]}", image]
+                        # allow options.args to append
+                        args = options.get('args') or []
+                        if isinstance(args, list):
+                            run_cmd.extend(args)
+                        p2 = subprocess.run(run_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+                        logs2 = p2.stdout + '\n' + p2.stderr
+                        if p2.returncode != 0:
+                            _post_callback('failed', f'docker run failed:\n{logs2}', datetime.datetime.utcnow().isoformat())
+                            return
+
+                        _post_callback('success', f'docker run succeeded:\n{logs2}', datetime.datetime.utcnow().isoformat())
+                        return
+                    except subprocess.TimeoutExpired as te:
+                        _post_callback('failed', f'install timeout: {te}', None)
+                        return
+                    except Exception as e:
+                        _post_callback('failed', f'install exception: {e}', None)
+                        return
+                else:
+                    # Unsupported type: mark failed
+                    import datetime
+                    _post_callback('failed', f'unsupported plugin type: {mtype}', datetime.datetime.utcnow().isoformat())
+
+            # schedule
+            try:
+                asyncio.create_task(_run_install())
+            except Exception as e:
+                logger.exception(f'Failed to schedule install task: {e}')
+
+        except Exception as e:
+            logger.exception(f'Error in _handle_admin_install_plugin: {e}')
+            try:
+                await websocket.send_text(__import__('json').dumps({'type': 'admin.install_plugin_result', 'data': {'ok': False, 'error': str(e)}}))
             except Exception:
                 pass
     
