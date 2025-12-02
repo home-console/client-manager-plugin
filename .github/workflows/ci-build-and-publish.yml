@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-and-publish:
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, Linux]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
