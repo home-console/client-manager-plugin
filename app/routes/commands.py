@@ -92,7 +92,11 @@ async def execute_command(
     client_id: str,
     request: Optional[CommandRequest] = None,
     timeout: int = 30,
-    name: Optional[CommandNameEnum] = Query(None, description="Имя команды (query param)", example="ls"),
+    name: Optional[CommandNameEnum] = Query(
+        None,
+        description="Имя команды (query param)",
+        examples={"default": {"value": "ls"}},
+    ),
     handler = Depends(get_websocket_handler),
 ):
     """Выполнить команду и получить результат
@@ -126,7 +130,11 @@ async def execute_command(
 async def execute_command_async(
     client_id: str,
     request: Optional[CommandRequest] = None,
-    name: Optional[CommandNameEnum] = Query(None, description="Имя команды (query param)", example="ls"),
+    name: Optional[CommandNameEnum] = Query(
+        None,
+        description="Имя команды (query param)",
+        examples={"default": {"value": "ls"}},
+    ),
     handler = Depends(get_websocket_handler),
 ):
     """Асинхронный запуск команды: сразу возвращает command_id без ожидания результата
@@ -151,9 +159,9 @@ async def execute_command_async(
 @router.post("/api/commands/{client_id}/cancel")
 async def cancel_command(client_id: str, command_id: str, timeout: int = 30, handler = Depends(get_websocket_handler)):
     """Отменить команду клиенту и дождаться результата отмены"""
-    # Проверяем, что клиент существует
-    websocket = handler.client_manager.get_client(client_id)
-    if not websocket:
+    # Проверяем, что клиент зарегистрирован (даже если мы не имеем реального
+    # WebSocket объекта в тестах, ключ в `clients` служит признаком регистрации).
+    if client_id not in handler.client_manager.clients:
         raise HTTPException(status_code=404, detail="Клиент не найден")
     
     # Отправляем отмену
@@ -181,10 +189,17 @@ async def get_command_status(command_id: str, handler = Depends(get_websocket_ha
     # Сначала проверим активные команды
     active = handler.command_handler.get_active_commands().get(command_id)
     if active:
+        status = active.get("status")
+        # Если статус — Enum, отдадим его значение (например 'pending'),
+        # иначе строковое представление.
+        try:
+            status_value = status.value if hasattr(status, "value") else str(status)
+        except Exception:
+            status_value = str(status)
         return {
             "command_id": command_id,
             "client_id": active.get("client_id"),
-            "status": str(active.get("status")),
+            "status": status_value,
             "started_at": active.get("started_at"),
             "timeout": active.get("timeout")
         }

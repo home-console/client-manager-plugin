@@ -90,10 +90,10 @@ class SSHInstallRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _validate_auth(cls, values: "SSHInstallRequest") -> "SSHInstallRequest":
-        if not values.password and not values.private_key:
+    def _validate_auth(self) -> "SSHInstallRequest":
+        if not self.password and not self.private_key:
             raise ValueError("Нужно указать password или private_key для SSH подключения")
-        return values
+        return self
 
 
 class SSHInstallResponse(BaseModel):

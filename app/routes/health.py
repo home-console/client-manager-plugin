@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Dict, Any
 from fastapi import APIRouter, Depends
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..dependencies import get_websocket_handler
 
@@ -23,7 +23,7 @@ async def health_check():
     """
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": "client-manager"
     }
 
@@ -47,7 +47,7 @@ async def readiness_check(handler = Depends(get_websocket_handler)):
         
         return {
             "status": "ready",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "clients_connected": len(clients)
         }
     except Exception as e:
@@ -66,7 +66,7 @@ async def liveness_check():
     """
     return {
         "status": "alive",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
@@ -80,7 +80,7 @@ async def get_metrics(handler = Depends(get_websocket_handler)):
         
         # Базовые метрики
         metrics = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "uptime_seconds": server_stats.get("uptime", 0),
             
             # WebSocket метрики

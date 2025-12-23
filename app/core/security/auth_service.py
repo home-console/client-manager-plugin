@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 import jwt
@@ -38,7 +38,7 @@ class AuthService:
     def create_token(self, client_id: str, permissions: list = None) -> str:
         """Создание JWT токена для клиента"""
         permissions = permissions or ["execute_commands", "read_status"]
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         payload = {
             "client_id": client_id,

@@ -15,6 +15,8 @@ class WebSocketManager:
     
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
+        # backward-compat alias used by tests and older code
+        self.connections = self.active_connections
         self.connection_metadata: Dict[str, dict] = {}
         self.connection_tasks: Dict[str, asyncio.Task] = {}
     

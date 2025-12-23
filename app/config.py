@@ -25,92 +25,81 @@ class Settings(BaseSettings):
     """Настройки приложения"""
     
     # Сервер
-    server_host: str = Field(default="0.0.0.0", env="SERVER_HOST")
-    server_port: int = Field(default=10000, env="SERVER_PORT")
-    server_reload: bool = Field(default=True, env="SERVER_RELOAD")
+    server_host: str = Field(default="0.0.0.0")
+    server_port: int = Field(default=10000)
+    server_reload: bool = Field(default=True)
     
     # SSL
-    ssl_keyfile: str = Field(default="server.key", env="SSL_KEYFILE")
-    ssl_certfile: str = Field(default="server.crt", env="SSL_CERTFILE")
+    ssl_keyfile: str = Field(default="server.key")
+    ssl_certfile: str = Field(default="server.crt")
     
     # Шифрование
-    server_encryption_key: str = Field(
-        default=None,
-        env="SERVER_ENCRYPTION_KEY"
-    )
-    encryption_salt: bytes = Field(default=b"remote-client-salt", env="ENCRYPTION_SALT")
+    server_encryption_key: str = Field(default=None)
+    encryption_salt: bytes = Field(default=b"remote-client-salt")
     
     # JWT
-    jwt_secret_key: str = Field(
-        default=None,
-        env="JWT_SECRET_KEY"
-    )
-    jwt_expire_minutes: int = Field(default=60, env="JWT_EXPIRE_MINUTES")
+    jwt_secret_key: str = Field(default=None)
+    jwt_expire_minutes: int = Field(default=60)
     
     # Валидация команд
-    command_validation_mode: str = Field(default="strict", env="COMMAND_VALIDATION_MODE")
-    max_command_length: int = Field(default=1000, env="MAX_COMMAND_LENGTH")
+    command_validation_mode: str = Field(default="strict")
+    max_command_length: int = Field(default=1000)
     
     # Логирование
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    log_format: str = Field(default="json", env="LOG_FORMAT")
+    log_level: str = Field(default="INFO")
+    log_format: str = Field(default="json")
     
     # CORS
     # CORS: по-умолчанию локальный фронтенд (без wildcard '*')
     cors_origins: List[str] = Field(
         default=["http://localhost:3000"],
-        env="CORS_ORIGINS"
     )
     
     # Ограничения
-    max_connections: int = Field(default=1000, env="MAX_CONNECTIONS")
-    max_command_timeout: int = Field(default=300, env="MAX_COMMAND_TIMEOUT")
-    max_output_size: int = Field(default=10 * 1024 * 1024, env="MAX_OUTPUT_SIZE")
+    max_connections: int = Field(default=1000)
+    max_command_timeout: int = Field(default=300)
+    max_output_size: int = Field(default=10 * 1024 * 1024)
     
     # Файловые трансферы
-    file_allowed_base_dir: str | None = Field(default=None, env="FILE_ALLOWED_BASE_DIR")
-    file_max_transfer_size: int | None = Field(default=None, env="FILE_MAX_TRANSFER_SIZE")
-    file_per_client_quota_bytes: int | None = Field(default=None, env="FILE_PER_CLIENT_QUOTA_BYTES")
+    file_allowed_base_dir: str | None = Field(default=None)
+    file_max_transfer_size: int | None = Field(default=None)
+    file_per_client_quota_bytes: int | None = Field(default=None)
     
     # Мониторинг
-    enable_metrics: bool = Field(default=True, env="ENABLE_METRICS")
-    metrics_port: int = Field(default=9090, env="METRICS_PORT")
+    enable_metrics: bool = Field(default=True)
+    metrics_port: int = Field(default=9090)
     
     # WebSocket лимиты
-    websocket_max_message_bytes: int = Field(default=1 * 1024 * 1024, env="WS_MAX_MESSAGE_BYTES")
-    websocket_max_messages_per_minute: int = Field(default=600, env="WS_MAX_MESSAGES_PER_MINUTE")
+    websocket_max_message_bytes: int = Field(default=1 * 1024 * 1024)
+    websocket_max_messages_per_minute: int = Field(default=600)
     
     # TLS downgrade (⚠️ НЕ ВКЛЮЧАЙТЕ В ПРОДАКШЕНЕ!)
-    allow_tls_downgrade: bool = Field(default=False, env="ALLOW_TLS_DOWNGRADE")
+    allow_tls_downgrade: bool = Field(default=False)
 
     # S3 / MinIO settings for terminal recordings
-    s3_endpoint: str | None = Field(default=None, env="S3_ENDPOINT")
-    s3_access_key_id: str | None = Field(default=None, env="S3_ACCESS_KEY_ID")
-    s3_secret_access_key: str | None = Field(default=None, env="S3_SECRET_ACCESS_KEY")
-    s3_bucket: str | None = Field(default=None, env="S3_BUCKET")
-    s3_region: str | None = Field(default="us-east-1", env="S3_REGION")
-    s3_use_ssl: bool = Field(default=True, env="S3_USE_SSL")
-    s3_presign_expiry_seconds: int = Field(default=3600, env="S3_PRESIGN_EXPIRY_SECONDS")
-    recordings_retention_days: int = Field(default=30, env="RECORDINGS_RETENTION_DAYS")
+    s3_endpoint: str | None = Field(default=None)
+    s3_access_key_id: str | None = Field(default=None)
+    s3_secret_access_key: str | None = Field(default=None)
+    s3_bucket: str | None = Field(default=None)
+    s3_region: str | None = Field(default="us-east-1")
+    s3_use_ssl: bool = Field(default=True)
+    s3_presign_expiry_seconds: int = Field(default=3600)
+    recordings_retention_days: int = Field(default=30)
 
     # Remote client установки через SSH
     remote_client_repo: str = Field(
         default="remote-home-labs/home-project_remote-client",
-        env="REMOTE_CLIENT_REPO",
         description="GitHub repo (owner/name) с релизами remote_client",
     )
     remote_client_release_base_url: Optional[str] = Field(
         default=None,
-        env="REMOTE_CLIENT_RELEASE_BASE_URL",
         description="Если задан, используется напрямую для загрузки бинарей remote_client",
     )
     remote_client_install_dir: str = Field(
         default="/opt/remote-client",
-        env="REMOTE_CLIENT_INSTALL_DIR",
     )
     remote_client_binary_name: str = Field(
         default="remote-client",
-        env="REMOTE_CLIENT_BINARY_NAME",
     )
     
     # Pydantic v2: настройка чтения .env и игнор лишних ключей

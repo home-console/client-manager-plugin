@@ -86,8 +86,31 @@ class CommandHandler:
             "blocked_commands": 0
         }
         
-        # Запускаем фоновую задачу очистки
-        asyncio.create_task(self._cleanup_task())
+        # Попытка запустить фоновую задачу очистки, если есть активный event loop.
+        # В средах без запущенного loop (например, unit-тесты, где dependency
+        # создаётся вне lifespan) создание задачи невозможно — отложим старт.
+        try:
+            loop = asyncio.get_running_loop()
+            self._cleanup_task_handle = loop.create_task(self._cleanup_task())
+        except RuntimeError:
+            self._cleanup_task_handle = None
+
+    def start_cleanup(self):
+        """Запустить фоновую задачу очистки, если она ещё не запущена.
+
+        Вызывать из контекста с работающим event loop (например, в lifespan
+        или при обработке первого запроса).
+        """
+        if getattr(self, "_cleanup_task_handle", None) is None:
+            loop = asyncio.get_running_loop()
+            self._cleanup_task_handle = loop.create_task(self._cleanup_task())
+
+    def stop_cleanup(self):
+        """Остановить фоновую задачу очистки, если она запущена."""
+        handle = getattr(self, "_cleanup_task_handle", None)
+        if handle is not None:
+            handle.cancel()
+            self._cleanup_task_handle = None
     
     async def handle_command_request(self, websocket: WebSocket, message: dict, client_id: str):
         """Обработка запроса на выполнение команды"""
