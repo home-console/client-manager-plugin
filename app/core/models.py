@@ -104,3 +104,10 @@ class EncryptionState(BaseModel):
     """Состояние шифрования для клиента"""
     seq_out: int = 0
     seq_in: int = 0
+
+
+class FileInfo(BaseModel):
+    """Элемент файлового списка, возвращаемый агентом."""
+    permissions: str
+    type: str = "file"
+    path: str
