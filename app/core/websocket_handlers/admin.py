@@ -38,7 +38,7 @@ class AdminHandlers:
             if ssh_params:
                 # Lazy import SSH installer
                 try:
-                    from ..config import settings
+                    from ...config import settings
                     from ..installers.ssh_installer import SSHInstaller  # type: ignore
 
                     installer = SSHInstaller(settings)

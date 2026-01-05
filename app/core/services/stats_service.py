@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Dict, Any
 
-from ..config import settings
+from ...config import settings
 
 
 class StatsService:

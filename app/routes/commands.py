@@ -87,7 +87,7 @@ def _build_command_text(name: Optional[str], body: Optional[CommandRequest]) -> 
     raise HTTPException(status_code=400, detail="Необходимо указать либо command в теле, либо name в query")
 
 
-@router.post("/api/commands/{client_id}", response_model=CommandResult)
+@router.post("/commands/{client_id}", response_model=CommandResult, tags=["Commands"])
 async def execute_command(
     client_id: str,
     request: Optional[CommandRequest] = None,
@@ -126,7 +126,7 @@ async def execute_command(
     return result
 
 
-@router.post("/api/commands/{client_id}/async", response_model=CommandAccepted)
+@router.post("/commands/{client_id}/async", response_model=CommandAccepted, tags=["Commands"])
 async def execute_command_async(
     client_id: str,
     request: Optional[CommandRequest] = None,
@@ -156,7 +156,7 @@ async def execute_command_async(
     return CommandAccepted(command_id=command_id, client_id=client_id, status="queued")
 
 
-@router.post("/api/commands/{client_id}/cancel")
+@router.post("/commands/{client_id}/cancel", tags=["Commands"])
 async def cancel_command(client_id: str, command_id: str, timeout: int = 30, handler = Depends(get_websocket_handler)):
     """Отменить команду клиенту и дождаться результата отмены"""
     # Проверяем, что клиент зарегистрирован (даже если мы не имеем реального
@@ -177,13 +177,13 @@ async def cancel_command(client_id: str, command_id: str, timeout: int = 30, han
     return result
 
 
-@router.get("/api/commands/history", response_model=List[CommandResult])
+@router.get("/commands/history", response_model=List[CommandResult], tags=["Commands"])
 async def get_command_history(handler = Depends(get_websocket_handler)):
     """Получить историю команд"""
     return handler.command_handler.get_command_history()
 
 
-@router.get("/api/commands/{command_id}/status")
+@router.get("/commands/{command_id}/status", tags=["Commands"])
 async def get_command_status(command_id: str, handler = Depends(get_websocket_handler)):
     """Получить статус команды: active (с деталями) или финальный результат"""
     # Сначала проверим активные команды
@@ -212,7 +212,7 @@ async def get_command_status(command_id: str, handler = Depends(get_websocket_ha
     raise HTTPException(status_code=404, detail="Команда не найдена")
 
 
-@router.get("/api/commands/{command_id}", response_model=CommandResult)
+@router.get("/commands/{command_id}", response_model=CommandResult, tags=["Commands"])
 async def get_command_result(command_id: str, handler = Depends(get_websocket_handler)):
     """Получить результат команды"""
     result = handler.command_handler.get_command_result(command_id)
@@ -221,21 +221,21 @@ async def get_command_result(command_id: str, handler = Depends(get_websocket_ha
     return result
 
 
-@router.delete("/api/commands/history")
+@router.delete("/commands/history", tags=["Commands"])
 async def clear_command_history(handler = Depends(get_websocket_handler)):
     """Очистить историю команд"""
     handler.command_handler.clear_command_history()
     return {"message": "История команд очищена"}
 
 
-@router.get("/api/commands/rate-limit/{client_id}")
+@router.get("/commands/rate-limit/{client_id}", tags=["Commands"])
 async def get_rate_limit_status(client_id: str, handler = Depends(get_websocket_handler)):
     """Получить статус rate limit для клиента"""
     stats = handler.command_handler.rate_limiter.get_client_stats(client_id)
     return stats
 
 
-@router.post("/api/commands/rate-limit/{client_id}/reset")
+@router.post("/commands/rate-limit/{client_id}/reset", tags=["Commands"])
 async def reset_rate_limit(client_id: str, handler = Depends(get_websocket_handler)):
     """Сбросить rate limit для клиента"""
     handler.command_handler.rate_limiter.reset_client(client_id)

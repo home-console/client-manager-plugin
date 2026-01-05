@@ -4,7 +4,8 @@
 
 import logging
 from typing import List
-from fastapi import APIRouter, HTTPException, Depends
+from uuid import uuid4
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from ..core.models import ClientInfo
@@ -13,7 +14,6 @@ from ..dependencies import get_websocket_handler
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
 
 @router.get("/", response_class=HTMLResponse)
 async def root():
@@ -237,7 +237,7 @@ async def root():
     return HTMLResponse(content=html_content)
 
 
-@router.get("/api/clients", response_model=List[ClientInfo], tags=["clients"])
+@router.get("/clients", response_model=List[ClientInfo], tags=["Clients"])
 async def get_clients(handler = Depends(get_websocket_handler)):
     """
     Получить список всех подключенных клиентов
@@ -271,7 +271,7 @@ async def get_clients(handler = Depends(get_websocket_handler)):
     return list(handler.get_all_clients().values())
 
 
-@router.get("/api/clients/{client_id}", response_model=ClientInfo, tags=["clients"])
+@router.get("/clients/{client_id}", response_model=ClientInfo, tags=["Clients"])
 async def get_client(client_id: str, handler = Depends(get_websocket_handler)):
     """
     Получить информацию о конкретном клиенте
@@ -309,7 +309,8 @@ async def get_client(client_id: str, handler = Depends(get_websocket_handler)):
     return client_info
 
 
-@router.delete("/api/clients/{client_id}", tags=["clients"])
+
+@router.delete("/clients/{client_id}", tags=["Clients"])
 async def disconnect_client(client_id: str, handler = Depends(get_websocket_handler)):
     """
     Принудительно отключить клиента от сервера

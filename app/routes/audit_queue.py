@@ -37,7 +37,7 @@ async def require_admin(handler = Depends(get_websocket_handler), authorization:
 router = APIRouter()
 
 
-@router.get("/api/admin/audit_queue/stats", tags=["Admin"])
+@router.get("/admin/audit_queue/stats", tags=["Admin"])
 async def audit_queue_stats(payload: Dict[str, Any] = Depends(require_admin), handler = Depends(get_websocket_handler)) -> Dict[str, Any]:
     """Return basic stats about the audit queue (pending count, backend used)."""
     if not handler:
@@ -69,7 +69,7 @@ async def audit_queue_stats(payload: Dict[str, Any] = Depends(require_admin), ha
     }
 
 
-@router.get("/api/admin/audit_queue/peek", tags=["Admin"])
+@router.get("/admin/audit_queue/peek", tags=["Admin"])
 async def audit_queue_peek(limit: int = 20, payload: Dict[str, Any] = Depends(require_admin), handler = Depends(get_websocket_handler)) -> List[Dict[str, Any]]:
     """Return up to `limit` pending audit payloads."""
     if not handler:

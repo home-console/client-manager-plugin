@@ -10,7 +10,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from ..dependencies import get_websocket_handler
 
 
-router = APIRouter(prefix="/api/enrollments", tags=["enrollments"])
+router = APIRouter(prefix="/enrollments", tags=["Enrollments"])
 security = HTTPBearer()
 
 
@@ -21,7 +21,7 @@ def _require_admin(credentials: HTTPAuthorizationCredentials = Security(security
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-@router.get("/pending", response_model=List[Dict[str, Any]])
+@router.get("/pending", response_model=List[Dict[str, Any]], tags=["Enrollments"])
 async def list_pending(_: None = Depends(_require_admin), handler = Depends(get_websocket_handler)):
     store = getattr(handler, "enrollments", None)
     if not store:
@@ -29,7 +29,7 @@ async def list_pending(_: None = Depends(_require_admin), handler = Depends(get_
     return store.list_pending()
 
 
-@router.post("/{client_id}/approve")
+@router.post("/{client_id}/approve", tags=["Enrollments"])
 async def approve_enrollment(client_id: str, _: None = Depends(_require_admin), handler = Depends(get_websocket_handler)):
     store = getattr(handler, "enrollments", None)
     if not store:
@@ -47,7 +47,7 @@ async def approve_enrollment(client_id: str, _: None = Depends(_require_admin), 
     return {"message": "approved", "client_id": client_id}
 
 
-@router.post("/{client_id}/reject")
+@router.post("/{client_id}/reject", tags=["Enrollments"])
 async def reject_enrollment(client_id: str, _: None = Depends(_require_admin), handler = Depends(get_websocket_handler)):
     store = getattr(handler, "enrollments", None)
     if not store:

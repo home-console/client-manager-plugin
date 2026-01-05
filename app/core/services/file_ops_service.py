@@ -5,7 +5,7 @@ import os
 import tempfile
 from typing import Callable, Dict, Any, List
 
-from ..config import settings
+from ...config import settings
 from ..transfers_manager import TransfersManager, TransferState
 from ..file_transfer_handler import FileTransferHandler
 from ..connection.websocket_manager import WebSocketManager

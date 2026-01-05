@@ -13,7 +13,7 @@ from ..dependencies import get_websocket_handler
 router = APIRouter()
 
 
-@router.post("/api/clients/{client_id}/terminal/start")
+@router.post("/clients/{client_id}/terminal/start", tags=["Clients"])
 async def start_terminal(client_id: str, request: Request, handler=Depends(get_websocket_handler)):
     """Инициировать терминальную сессию на remote client через существующий WS канал."""
     if not handler:
@@ -174,7 +174,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str, handler=Depends(get
             pass
 
 
-@router.get("/api/terminals/{session_id}/recording")
+@router.get("/terminals/{session_id}/recording")
 async def get_terminal_recording(session_id: str, request: Request, handler=Depends(get_websocket_handler)):
     """Download recorded terminal session (admins/internal only)."""
     auth = request.headers.get("authorization") or ""

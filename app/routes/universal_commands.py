@@ -33,7 +33,7 @@ class DeviceGroupCommandRequest(BaseModel):
     command: UniversalCommandRequest
 
 
-@router.post("/api/universal/{client_id}/execute")
+@router.post("/universal/{client_id}/execute")
 async def execute_universal_command(
     client_id: str,
     request: UniversalCommandRequest,
@@ -112,7 +112,7 @@ async def execute_universal_command(
     }
 
 
-@router.post("/api/universal/group/execute")
+@router.post("/universal/group/execute")
 async def execute_group_command(
     request: DeviceGroupCommandRequest,
     handler = Depends(get_websocket_handler)
@@ -190,10 +190,10 @@ async def execute_group_command(
     }
 
 
-@router.get("/api/universal/capabilities")
+@router.get("/universal/capabilities")
 async def get_device_capabilities():
     """
-    Получить список всех возможных возможностей устройств
+    Получить список всех возможных возможностей клиентов
     """
     return {
         device_type.value: list(capabilities)
@@ -201,7 +201,7 @@ async def get_device_capabilities():
     }
 
 
-@router.get("/api/universal/commands")
+@router.get("/universal/commands")
 async def get_supported_commands():
     """
     Получить список всех поддерживаемых универсальных команд
@@ -219,10 +219,10 @@ async def get_supported_commands():
     }
 
 
-@router.get("/api/devices/types")
+@router.get("/clients/types", tags=["Clients"])
 async def get_device_types(handler = Depends(get_websocket_handler)):
     """
-    Получить статистику устройств по типам
+    Получить статистику клиентов по типам
     """
     all_clients = handler.client_manager.get_all_clients()
     stats = {}
@@ -232,11 +232,11 @@ async def get_device_types(handler = Depends(get_websocket_handler)):
         if device_type not in stats:
             stats[device_type] = {
                 "count": 0,
-                "devices": [],
+                "clients": [],
                 "capabilities": list(DeviceCapabilities.CAPABILITIES.get(client_info.device_type, set()))
             }
         stats[device_type]["count"] += 1
-        stats[device_type]["devices"].append({
+        stats[device_type]["clients"].append({
             "id": client_info.id,
             "hostname": client_info.hostname,
             "status": client_info.status,

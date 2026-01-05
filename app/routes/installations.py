@@ -15,7 +15,7 @@ from ..schemas.install import SSHInstallRequest, SSHInstallResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/installations", tags=["installations"])
+router = APIRouter(prefix="/installations", tags=["installations"])
 installer = SSHInstaller(get_settings())
 
 

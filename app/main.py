@@ -221,21 +221,21 @@ def create_app() -> FastAPI:
             await handler.websocket_manager.disconnect(admin_id)
     
     # Подключение роутов
-    app.include_router(clients.router)
-    app.include_router(commands.router)
+    app.include_router(clients.router, prefix="/api", tags=["Clients"])
+    app.include_router(commands.router, prefix="/api", tags=["Commands"])
     app.include_router(health.router)
-    app.include_router(files.router)
-    app.include_router(secrets.router)
-    app.include_router(enrollments.router)
-    app.include_router(installations.router)
-    app.include_router(universal_commands.router)
+    app.include_router(files.router, prefix="/api", tags=["Files"])
+    app.include_router(secrets.router, prefix="/api", tags=["Secrets"])
+    app.include_router(enrollments.router, prefix="/api", tags=["Enrollments"])
+    app.include_router(installations.router, prefix="/api", tags=["Installations"])
+    app.include_router(universal_commands.router, prefix="/api", tags=["Universal Commands"])
     app.include_router(cloud.router, prefix="/api/cloud", tags=["Cloud Services"])
-    app.include_router(terminal.router)
-    app.include_router(audit_queue.router)
+    app.include_router(terminal.router, prefix="/api", tags=["Terminal"])
+    app.include_router(audit_queue.router, prefix="/api", tags=["Audit"])
     # internal admin messaging
     try:
         from .routes import admin_messages
-        app.include_router(admin_messages.router)
+        app.include_router(admin_messages.router, prefix="/api", tags=["Admin"])
     except Exception:
         pass
 

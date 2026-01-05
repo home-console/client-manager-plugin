@@ -15,7 +15,7 @@ from ..dependencies import get_websocket_handler
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/secrets", tags=["secrets"])
+router = APIRouter(prefix="/secrets", tags=["secrets"])
 security = HTTPBearer()
 
 

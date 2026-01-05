@@ -26,7 +26,7 @@ class TerminalHandlers:
         """Register a new terminal session mapping to an agent."""
         h = self.handler
         # create recording dir and metadata
-        from ..config import settings
+        from ...config import settings
 
         rec_dir = getattr(settings, "TERMINAL_RECORDING_DIR", "/tmp/terminals")
         try:
@@ -251,7 +251,7 @@ class TerminalHandlers:
         """Upload recording file to S3/MinIO if configured. Runs in background."""
         h = self.handler
         try:
-            from ..config import settings
+            from ...config import settings
 
             s3_endpoint = getattr(settings, "s3_endpoint", None)
             bucket = getattr(settings, "s3_bucket", None)

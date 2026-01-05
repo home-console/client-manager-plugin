@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 
 from fastapi import WebSocket
 
-from ..utils.encryption import compute_hmac
-from ..config import settings
+from ...utils.encryption import compute_hmac
+from ...config import settings
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..websocket_handler import WebSocketHandler

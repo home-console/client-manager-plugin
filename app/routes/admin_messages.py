@@ -110,7 +110,7 @@ def verify_jwt(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-@router.post("/api/admin/send_message")
+@router.post("/admin/send_message", tags=["Admin"])
 async def admin_send_message(payload: Dict[str, Any], request: Request, handler = Depends(get_websocket_handler)):
     # Prefer JWT signed with HS256 when ADMIN_JWT_SECRET is set. Fallback to simple ADMIN_TOKEN.
     jwt_secret = os.getenv('ADMIN_JWT_SECRET', '')
