@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient
 # Ensure JWT secret is set before app startup
 os.environ.setdefault('JWT_SECRET_KEY', 'test-secret')
 
-from client_manager.app.main import app
-from client_manager.app.core.security.auth_service import AuthService
+from app.main import app
+from app.core.security.auth_service import AuthService
 
 
 def test_admin_ws_connect_and_ping():

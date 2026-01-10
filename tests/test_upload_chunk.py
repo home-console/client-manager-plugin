@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 # Ensure JWT secret is set before app startup
 os.environ.setdefault('JWT_SECRET_KEY', 'test-secret')
 
-from client_manager.app.main import app
+from app.main import app
 
 
 def test_upload_chunk_creates_transfer_and_writes():
@@ -31,7 +31,7 @@ def test_upload_chunk_creates_transfer_and_writes():
     # Ensure JWT secret is set before app startup
     os.environ.setdefault('JWT_SECRET_KEY', 'test-secret')
 
-    from client_manager.app.main import app
+    from app.main import app
 
 
     def test_upload_chunk_creates_transfer_and_writes():

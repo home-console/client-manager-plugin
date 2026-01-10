@@ -1,0 +1,8 @@
+{
+    "class_path": "plugins.client_manager_service.plugin.ClientManagerPlugin",
+    "name": "client_manager",
+    "version": "1.0.0",
+    "description": "Управление удаленными клиентами через WebSocket и REST API",
+    "author": "Home Console",
+    "dependencies": []
+}

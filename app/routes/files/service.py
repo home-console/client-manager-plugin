@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Попытка импортировать Celery app для постановки задач в очередь (PoC RabbitMQ/Celery)
 try:
-    from client_manager.tasks.celery_app import celery as celery_app  # type: ignore
+    from tasks.celery_app import celery as celery_app  # type: ignore
 except Exception:
     celery_app = None
 
@@ -31,7 +31,7 @@ def _enqueue_or_fallback(handler, client_id: str, transfer_id: str, src_path: st
     if celery_app and os.getenv("CELERY_BROKER_URL"):
         try:
             res = celery_app.send_task(
-                "client_manager.tasks.upload_tasks.process_upload_task",
+                "tasks.upload_tasks.process_upload_task",
                 args=[transfer_id, client_id, src_path, start_offset],
             )
             try:
