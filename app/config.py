@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     s3_presign_expiry_seconds: int = Field(default=3600)
     recordings_retention_days: int = Field(default=30)
 
+    # Feature flags for optional heavy dependencies
+    enable_cloud_services: bool = Field(default=False, description="Enable S3/Cloud integrations (boto3)")
+    enable_ssh_installer: bool = Field(default=False, description="Enable SSH installer (paramiko)")
+    enable_secrets_sync: bool = Field(default=False, description="Enable secrets synchronization features")
+
     # Remote client установки через SSH
     remote_client_repo: str = Field(
         default="remote-home-labs/home-project_remote-client",

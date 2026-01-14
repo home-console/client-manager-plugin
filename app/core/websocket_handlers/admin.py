@@ -36,9 +36,20 @@ class AdminHandlers:
             # Real install: attempt to use SSH installer if payload contains ssh params
             ssh_params = data.get("ssh") or {}
             if ssh_params:
-                # Lazy import SSH installer
+                # Check feature flag first
                 try:
                     from ...config import settings
+                except Exception:
+                    settings = None
+
+                if not settings or not getattr(settings, "enable_ssh_installer", False):
+                    await websocket.send_text(
+                        json.dumps({"type": "admin.install_result", "data": {"ok": False, "error": "SSH installer disabled"}})
+                    )
+                    return
+
+                # Lazy import SSH installer
+                try:
                     from ..installers.ssh_installer import SSHInstaller  # type: ignore
 
                     installer = SSHInstaller(settings)
