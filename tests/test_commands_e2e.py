@@ -1,11 +1,19 @@
 import asyncio
 import json
+import os
+import sys
 import time
 from typing import Any, Dict
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+# Ensure the plugin root is on sys.path
+THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+PLUGIN_ROOT = os.path.abspath(os.path.join(THIS_DIR, '..'))
+if PLUGIN_ROOT not in sys.path:
+    sys.path.insert(0, PLUGIN_ROOT)
 
 from app.main import create_app
 from app.dependencies import get_websocket_handler

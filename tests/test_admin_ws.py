@@ -2,11 +2,11 @@ import os
 import sys
 import json
 
-# Ensure the repository root (one level above `client_manager`) is on sys.path
+# Ensure the plugin root is on sys.path
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, '..', '..'))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+PLUGIN_ROOT = os.path.abspath(os.path.join(THIS_DIR, '..'))
+if PLUGIN_ROOT not in sys.path:
+    sys.path.insert(0, PLUGIN_ROOT)
 
 from fastapi.testclient import TestClient
 
