@@ -263,7 +263,7 @@ class APIExamples:
                 "client_id": client_id
             }
             
-            async with session.post(
+            async with await session.post(
                 f"{self.base_url}/api/commands/send",
                 json=payload
             ) as response:
@@ -279,7 +279,7 @@ class APIExamples:
         import aiohttp
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(
+            async with await session.get(
                 f"{self.base_url}/api/commands/results/{command_id}"
             ) as response:
                 if response.status == 200:
@@ -294,7 +294,7 @@ class APIExamples:
         import aiohttp
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.base_url}/api/clients") as response:
+            async with await session.get(f"{self.base_url}/api/clients") as response:
                 if response.status == 200:
                     clients = await response.json()
                     return clients
@@ -307,7 +307,7 @@ class APIExamples:
         import aiohttp
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.base_url}/api/stats") as response:
+            async with await session.get(f"{self.base_url}/api/stats") as response:
                 if response.status == 200:
                     stats = await response.json()
                     return stats
@@ -355,7 +355,7 @@ class IntegrationExamples:
         }
         
         async with aiohttp.ClientSession() as session:
-            async with session.post(webhook_url, json=notification) as response:
+            async with await session.post(webhook_url, json=notification) as response:
                 return response.status == 200
     
     @staticmethod
