@@ -45,9 +45,9 @@ class Settings(BaseSettings):
     command_validation_mode: str = Field(default="strict")
     max_command_length: int = Field(default=1000)
     
-    # Логирование
+    # Логирование (по умолчанию text — читаемый вывод в консоли; json для парсинга в prod)
     log_level: str = Field(default="INFO")
-    log_format: str = Field(default="json")
+    log_format: str = Field(default="text")
     
     # CORS
     # CORS: по-умолчанию локальный фронтенд (без wildcard '*')

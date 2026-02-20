@@ -253,8 +253,13 @@ class CloudManager:
 
     def _load_services(self):
         """Загрузка настроек облачных сервисов через auth сервис"""
-        # Сначала пробуем получить токены из auth сервиса
-        auth_tokens = self._get_tokens_from_auth_service()
+        # Запрос к /api/tokens/cloud отключён по умолчанию (ручка может отсутствовать в Core).
+        # Включить: CLIENT_MANAGER_FETCH_CLOUD_TOKENS=1
+        auth_tokens = (
+            self._get_tokens_from_auth_service()
+            if os.getenv("CLIENT_MANAGER_FETCH_CLOUD_TOKENS", "").strip() == "1"
+            else {}
+        )
 
         # Яндекс.Диск
         if yandex_token := auth_tokens.get("yandex_disk") or os.getenv("YANDEX_DISK_TOKEN"):
@@ -303,7 +308,8 @@ class CloudManager:
                 logger.info(f"Получено {len(tokens)} токенов из auth сервиса")
                 return tokens
             else:
-                logger.warning(f"Не удалось получить токены из auth сервиса: {response.status_code}")
+                if response.status_code != 404:
+                    logger.warning(f"Не удалось получить токены из auth сервиса: {response.status_code}")
                 return {}
 
         except Exception as e:

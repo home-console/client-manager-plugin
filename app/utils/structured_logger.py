@@ -14,6 +14,19 @@ from contextvars import ContextVar
 # Context variable для correlation ID
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
 
+# Имя плагина для текстового формата логов: [LEVEL] [plugin_name] message
+plugin_name_var: ContextVar[str] = ContextVar("plugin_name", default="client_manager")
+
+
+def set_plugin_name(name: str) -> None:
+    """Установить имя плагина для логов (например при загрузке из Core Runtime)."""
+    plugin_name_var.set(name)
+
+
+def get_plugin_name() -> str:
+    """Текущее имя плагина из контекста."""
+    return plugin_name_var.get()
+
 
 def set_correlation_id(correlation_id: str):
     """Установить correlation ID для текущего контекста"""
@@ -67,6 +80,24 @@ class StructuredFormatter(logging.Formatter):
         return json.dumps(log_data, ensure_ascii=False)
 
 
+# Стандартный формат текстовых логов: [тип] [плагин] сообщение
+PLUGIN_LOG_FMT = "[%(levelname)s] [%(plugin)s] %(message)s"
+
+
+class PluginTextFormatter(logging.Formatter):
+    """
+    Форматтер для текстовых логов с подстановкой имени плагина из контекста.
+    Если в record передан extra['plugin'] — используется он, иначе get_plugin_name().
+    """
+    def __init__(self, fmt: str = PLUGIN_LOG_FMT, *args, **kwargs):
+        super().__init__(fmt, *args, **kwargs)
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not getattr(record, "plugin", None):
+            record.plugin = get_plugin_name()
+        return super().format(record)
+
+
 class StructuredLogger:
     """
     Wrapper для удобного structured logging
@@ -116,29 +147,31 @@ class StructuredLogger:
         self._log(logging.CRITICAL, message, **kwargs)
 
 
-def setup_logging(level: str = "INFO", json_format: bool = True):
+def setup_logging(
+    level: str = "INFO",
+    json_format: bool = True,
+    plugin_name: Optional[str] = None,
+):
     """
-    Настройка structured logging для всего приложения
-    
+    Настройка structured logging для всего приложения.
+
     Args:
         level: Уровень логирования (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        json_format: Использовать JSON формат (True) или обычный текст (False)
+        json_format: Использовать JSON формат (True) или текст (False)
+        plugin_name: Имя плагина для текстового формата ([LEVEL] [plugin_name] message).
+                     Если не задано, используется контекст (set_plugin_name) или "client_manager".
     """
+    if plugin_name is not None:
+        set_plugin_name(plugin_name)
+
     root_logger = logging.getLogger()
-    
-    # Очищаем существующие handlers
     root_logger.handlers.clear()
-    
-    # Создаем handler для stdout
     handler = logging.StreamHandler(sys.stdout)
-    
-    # Устанавливаем formatter
+
     if json_format:
         formatter = StructuredFormatter()
     else:
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - [%(correlation_id)s] - %(message)s'
-        )
+        formatter = PluginTextFormatter(PLUGIN_LOG_FMT)
     
     handler.setFormatter(formatter)
     root_logger.addHandler(handler)
