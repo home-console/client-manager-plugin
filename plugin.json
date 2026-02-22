@@ -1,10 +1,9 @@
 {
-    "_disabled": true,
-    "class_path": "plugins.client_manager_service.plugin.ClientManagerPlugin",
-    "name": "client_manager_service",
-    "version": "1.0.0",
-    "description": "Управление удаленными клиентами через WebSocket и REST API (legacy - disabled)",
-    "author": "Home Console",
-    "dependencies": [],
-    "_comment": "Этот плагин устарел и отключен. Используйте plugins/client_manager/ вместо этого."
+  "class_path": "plugin.ClientManagerPlugin",
+  "name": "client_manager",
+  "version": "1.0.0",
+  "description": "Управление удалёнными клиентами через WebSocket и REST API",
+  "author": "Home Console",
+  "dependencies": [],
+  "execution_mode": "in_process"
 }

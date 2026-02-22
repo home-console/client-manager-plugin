@@ -227,10 +227,15 @@ class ClientManagerPlugin(BasePlugin):
         await super().on_start()
         
         try:
+            # Каталог плагина должен быть в sys.path для импорта app (ядро добавляет при загрузке; дублируем для надёжности)
+            import sys
+            from pathlib import Path
+            _plugindir = Path(__file__).resolve().parent
+            if str(_plugindir) not in sys.path:
+                sys.path.insert(0, str(_plugindir))
             # Импортируем здесь для ленивой загрузки
             from app.core.websocket_handler import WebSocketHandler
             from app.core.security.auth_service import AuthService
-            from app.config import settings
             
             # Инициализируем WebSocket handler
             self.handler = WebSocketHandler()

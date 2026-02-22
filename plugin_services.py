@@ -33,7 +33,8 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
         return plugin.handler.get_all_clients()
     
     await registry.register("client_manager.list_clients", list_clients)
-    
+    await registry.register("client_manager._impl.list_clients", list_clients)
+
     # GET /client-manager/clients/{client_id}
     async def get_client(client_id: str, body: Any = None, **kwargs) -> Optional[Dict[str, Any]]:
         """
