@@ -27,6 +27,9 @@ class WebSocketHandler:
         # Собираем контекст (зависимости)
         ctx = WebSocketContext(self)
         self.ctx = ctx
+        
+        # Runtime (инициализируется позже через set_runtime())
+        self.runtime = None
 
         # Пробрасываем основные зависимости для совместимости
         self.websocket_manager = ctx.websocket_manager
@@ -146,6 +149,11 @@ class WebSocketHandler:
     async def _maybe_upload_recording(self, record_path: str, session_id: str):
         """Upload recording file to S3/MinIO if configured. Runs in background."""
         await self.terminal_handlers._maybe_upload_recording(record_path, session_id)
+    
+    def set_runtime(self, runtime):
+        """Установить runtime для доступа к deployment_tracker и другим компонентам."""
+        self.runtime = runtime
+        logger.info("✅ Runtime установлен в WebSocketHandler")
     
     async def _cleanup_client(self, client_id: str):
         """Очистка при отключении клиента"""

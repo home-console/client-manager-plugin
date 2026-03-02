@@ -40,15 +40,20 @@ class RotateSecretsResponse(BaseModel):
     clients_notified: int
 
 
-def verify_admin_token(credentials: HTTPAuthorizationCredentials = Security(security)) -> bool:
-    """Проверка токена администратора (базовая реализация)"""
-    # TODO: Реализовать проверку JWT токена или другого механизма авторизации
+def verify_admin_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    handler: WebSocketHandler = Depends(get_websocket_handler),
+) -> bool:
+    """Проверка JWT токена администратора для ротации секретов."""
     token = credentials.credentials
-    settings = get_settings()
-    
-    # Простая проверка через JWT_SECRET_KEY (для продакшена нужно использовать полноценную авторизацию)
-    # Временная реализация - всегда разрешаем для разработки
-    # В продакшене здесь должна быть проверка JWT токена
+    auth_service = getattr(handler, "auth_service", None)
+    if auth_service and hasattr(auth_service, "verify_token"):
+        payload = auth_service.verify_token(token)
+        if payload:
+            return True
+        raise HTTPException(status_code=401, detail="Невалидный или истёкший токен")
+    # Fallback: без AuthService (dev) — доступ разрешён с предупреждением
+    logger.warning("Secrets rotate: AuthService недоступен, доступ разрешён (dev mode)")
     return True
 
 

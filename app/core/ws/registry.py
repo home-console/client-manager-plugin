@@ -12,15 +12,16 @@ def register_handlers(handler: "WebSocketHandler"):
     """Регистрация обработчиков сообщений."""
     from ..messaging.message_router import RegistrationHandler, HeartbeatHandler
 
-    # Обработчик регистрации
+    # Обработчик регистрации с валидацией enrollment_token
     registration_handler = RegistrationHandler(
         handler.client_manager,
         handler.encryption_service,
+        runtime=handler.runtime,
     )
     handler.message_router.register_handler("register", registration_handler.handle)
 
     # Обработчик heartbeat
-    heartbeat_handler = HeartbeatHandler(handler.client_manager, handler.encryption_service)
+    heartbeat_handler = HeartbeatHandler(handler.client_manager, handler.encryption_service, runtime=handler.runtime)
     handler.message_router.register_handler("heartbeat", heartbeat_handler.handle)
 
     # Обработчики команд

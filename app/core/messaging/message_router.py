@@ -86,17 +86,60 @@ class MessageHandler:
 class RegistrationHandler(MessageHandler):
     """Обработчик регистрации клиентов"""
     
-    def __init__(self, client_manager, encryption_service):
+    def __init__(self, client_manager, encryption_service, runtime=None):
         super().__init__("RegistrationHandler")
         self.client_manager = client_manager
         self.encryption_service = encryption_service
+        self.runtime = runtime  # Для валидации enrollment_token
     
     async def handle(self, websocket: WebSocket, message: dict, client_id: str):
         """Обработка регистрации клиента"""
         self.log_message("register", client_id, "Обработка регистрации")
         
+        # Получаем данные регистрации
+        data = message.get('data', {})
+        enrollment_token = data.get('enrollment_token')
+        
+        # Валидируем enrollment_token если требуется
+        agent_name = None
+        if enrollment_token:
+            try:
+                # Получаем agent_manager из runtime
+                if not self.runtime or not hasattr(self.runtime, 'agent_manager'):
+                    self.logger.error("❌ Runtime or agent_manager not available for enrollment validation")
+                    response = {
+                        "type": "registration_error",
+                        "error": "Server configuration error: enrollment validation unavailable"
+                    }
+                    encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
+                    await websocket.send_text(encrypted_response)
+                    return
+                
+                # Валидируем token и получаем agent_name
+                agent_name = await self.runtime.agent_manager.validate_enrollment_token(enrollment_token)
+                self.logger.info(f"✅ Enrollment token validated for agent: {agent_name}")
+                
+            except ValueError as e:
+                self.logger.warning(f"❌ Enrollment token validation failed: {e}")
+                response = {
+                    "type": "registration_error",
+                    "error": f"Invalid enrollment token: {str(e)}"
+                }
+                encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
+                await websocket.send_text(encrypted_response)
+                return
+            except Exception as e:
+                self.logger.error(f"❌ Enrollment token validation error: {e}")
+                response = {
+                    "type": "registration_error",
+                    "error": "Enrollment validation error"
+                }
+                encrypted_response = await self.encryption_service.encrypt_message(response, client_id)
+                await websocket.send_text(encrypted_response)
+                return
+        
         # Регистрируем клиента
-        new_client_id = await self.client_manager.register_client(websocket, message.get('data', {}))
+        new_client_id = await self.client_manager.register_client(websocket, data)
         
         # Сбрасываем состояние шифрования при переподключении
         if new_client_id in self.encryption_service.encryption_states:
@@ -113,16 +156,18 @@ class RegistrationHandler(MessageHandler):
         encrypted_response = await self.encryption_service.encrypt_message(response, new_client_id)
         await websocket.send_text(encrypted_response)
         
-        self.logger.info(f"✅ Регистрация завершена для клиента {new_client_id}")
+        self.logger.info(f"✅ Регистрация завершена для клиента {new_client_id}" + 
+                       (f" (enrolled as {agent_name})" if agent_name else ""))
 
 
 class HeartbeatHandler(MessageHandler):
     """Обработчик heartbeat сообщений"""
 
-    def __init__(self, client_manager, encryption_service):
+    def __init__(self, client_manager, encryption_service, runtime=None):
         super().__init__("HeartbeatHandler")
         self.client_manager = client_manager
         self.encryption_service = encryption_service
+        self.runtime = runtime  # Для интеграции с DeploymentTracker
 
     async def handle(self, websocket: WebSocket, message: dict, client_id: str):
         """Обработка heartbeat"""
@@ -130,6 +175,31 @@ class HeartbeatHandler(MessageHandler):
 
         # Обновляем время последнего heartbeat
         self.client_manager.update_heartbeat(client_id)
+
+        # НОВОЕ: Интегрируем с DeploymentTracker для завершения deployment
+        if self.runtime and hasattr(self.runtime, 'deployment_tracker') and self.runtime.deployment_tracker:
+            try:
+                from datetime import datetime, timezone
+                # Получаем pending deployments в статусе "registering"
+                pending = await self.runtime.deployment_tracker.list_deployments(
+                    status="registering",
+                    limit=100
+                )
+                
+                # Ищем deployment для этого agent_id
+                for deployment in pending:
+                    if deployment.agent_id == client_id:
+                        # Отмечаем deployment как READY
+                        await self.runtime.deployment_tracker.update_status(
+                            deployment.deployment_id,
+                            status="ready",
+                            progress=100,
+                            completed_at=datetime.now(timezone.utc).isoformat()
+                        )
+                        self.log_message("heartbeat", client_id, 
+                            f"✅ Deployment {deployment.deployment_id} отмечен как READY")
+            except Exception as e:
+                self.logger.debug(f"[HeartbeatHandler] Error updating deployment: {e}")
 
         # Отправляем подтверждение
         response = {
