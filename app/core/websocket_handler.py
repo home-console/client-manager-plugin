@@ -61,8 +61,8 @@ class WebSocketHandler:
         """Обработка WebSocket соединения"""
         await handle_connection(self, websocket)
     
-    async def _handle_registration(self, websocket: WebSocket, message: dict, skip_secrets_send: bool = False) -> str:
-        return await self.registration_handlers.handle_registration(websocket, message, skip_secrets_send=skip_secrets_send)
+    async def _handle_registration(self, websocket: WebSocket, message: dict, skip_secrets_send: bool = False, pre_validated_agent_name: str | None = None) -> str:
+        return await self.registration_handlers.handle_registration(websocket, message, skip_secrets_send=skip_secrets_send, pre_validated_agent_name=pre_validated_agent_name)
 
     async def send_enrollment_result(self, client_id: str, status: str = "approved") -> None:
         """Отправить клиенту результат утверждения (approved/rejected)."""

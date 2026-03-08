@@ -144,6 +144,14 @@ class RegistrationHandler(MessageHandler):
         # Сбрасываем состояние шифрования при переподключении
         if new_client_id in self.encryption_service.encryption_states:
             self.encryption_service.reset_encryption_state(new_client_id)
+
+        # Если агент прошёл enrollment — регистрируем его в agent_manager,
+        # чтобы _execute_deployment мог обнаружить его через list_enrolled_agents().
+        if agent_name and self.runtime and hasattr(self.runtime, 'agent_manager'):
+            try:
+                await self.runtime.agent_manager.register_agent_from_ws(agent_name, new_client_id)
+            except Exception as exc:
+                self.logger.error(f"❌ register_agent_from_ws failed: {exc}")
         
         # Отправляем подтверждение
         response = {

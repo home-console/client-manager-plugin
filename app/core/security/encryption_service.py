@@ -40,7 +40,11 @@ class EncryptionService:
         
         # Состояние шифрования для каждого клиента
         self.encryption_states: Dict[str, Dict[str, int]] = {}
-        
+
+        # Per-client derived keys (для MEDIUM-TERM per-agent encryption)
+        # Если ключ есть — используется вместо глобального self._encryption_key
+        self._client_keys: Dict[str, bytes] = {}
+
         # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Replay protection для unknown клиентов
         # Временное хранилище sequence numbers для unknown клиентов (до регистрации)
         # Ключ: (client_id, connection_start_time) для уникальности соединений
@@ -49,6 +53,25 @@ class EncryptionService:
     def is_encryption_enabled(self) -> bool:
         """Проверить, включено ли шифрование"""
         return self._encryption_key is not None
+
+    # ------------------------------------------------------------------
+    # Per-client key management (MEDIUM-TERM: per-agent unique keys)
+    # ------------------------------------------------------------------
+
+    def set_client_derived_key(self, client_id: str, derived_key: bytes) -> None:
+        """Сохранить производный ключ для конкретного клиента.
+
+        Вызывается после успешного handle_request_secrets, когда сервер
+        сгенерировал уникальные per-agent ключи и отправил их агенту.
+        При последующих подключениях агент будет отправлять сообщения
+        зашифрованными этим ключом, а не глобальным SERVER_ENCRYPTION_KEY.
+        """
+        self._client_keys[client_id] = derived_key
+        logger.info(f"🔑 Per-agent ключ сохранён для клиента {client_id}")
+
+    def _key_for_client(self, client_id: str) -> Optional[bytes]:
+        """Вернуть ключ для клиента: per-agent если есть, иначе глобальный."""
+        return self._client_keys.get(client_id) or self._encryption_key
     
     def get_encryption_state(self, client_id: str) -> Dict[str, int]:
         """Получить состояние шифрования для клиента"""
@@ -78,11 +101,12 @@ class EncryptionService:
         if "data" not in message or message["data"] is None:
             message["data"] = {}
         message["data"]["_seq"] = state["seq_out"]
-        
-        # Шифруем сообщение
+
+        # Шифруем сообщение (используем per-agent ключ если есть)
+        active_key = self._key_for_client(client_id)
         plaintext = json.dumps(message).encode("utf-8")
-        payload_enc = encrypt_aes_gcm(self._encryption_key, plaintext)
-        hmac_val = compute_hmac(self._encryption_key, payload_enc)
+        payload_enc = encrypt_aes_gcm(active_key, plaintext)
+        hmac_val = compute_hmac(active_key, payload_enc)
         
         # Создаем обертку
         wrapper = {
@@ -93,33 +117,45 @@ class EncryptionService:
         return json.dumps(wrapper)
     
     async def decrypt_message(self, data: str, client_id: str) -> dict:
-        """Дешифрование сообщения"""
-        if not self._encryption_key:
+        """Дешифрование сообщения.
+
+        Использует per-agent ключ если сохранён (MEDIUM-TERM),
+        иначе глобальный SERVER_ENCRYPTION_KEY (SHORT-TERM).
+        """
+        active_key = self._key_for_client(client_id)
+        if not active_key:
             return json.loads(data)
-        
+
         try:
             wrapper = json.loads(data)
             if "payload" not in wrapper or "hmac" not in wrapper:
                 # При включенном шифровании принимаем только зашифрованные сообщения
+                keys_present = list(wrapper.keys())[:5]  # первые 5 ключей для диагностики
+                msg_type = wrapper.get("type", "<no type>")
+                preview = data[:120] if len(data) > 120 else data
+                logger.warning(
+                    f"[EncryptionService] Unencrypted message from {client_id}: "
+                    f"type={msg_type!r}, keys={keys_present}, preview={preview!r}"
+                )
                 raise ValueError("Unencrypted WebSocket message is not allowed when encryption is enabled")
-            
+
             # Инициализируем состояние если еще нет
             if client_id not in self.encryption_states:
                 self.encryption_states[client_id] = {"seq_out": 0, "seq_in": 0}
-            
+
             # Извлекаем данные
             payload_b64 = wrapper["payload"]
             hmac_b64 = wrapper["hmac"]
             payload_enc = base64.b64decode(payload_b64)
             hmac_recv = base64.b64decode(hmac_b64)
-            
-            # Проверка HMAC
-            hmac_calc = compute_hmac(self._encryption_key, payload_enc)
+
+            # Проверка HMAC (per-agent или глобальный ключ)
+            hmac_calc = compute_hmac(active_key, payload_enc)
             if not hmac_module.compare_digest(hmac_calc, hmac_recv):
                 raise ValueError("HMAC mismatch")
-            
+
             # Дешифровка
-            plaintext = decrypt_aes_gcm(self._encryption_key, payload_enc)
+            plaintext = decrypt_aes_gcm(active_key, payload_enc)
             message = json.loads(plaintext.decode("utf-8"))
             
             # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Replay protection для всех клиентов, включая unknown
@@ -168,11 +204,17 @@ class EncryptionService:
     
     def migrate_unknown_to_registered(self, unknown_client_id: str, registered_client_id: str):
         """
-        КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Миграция sequence numbers от unknown к зарегистрированному клиенту
-        
-        При регистрации клиента переносим его sequence state из временного хранилища
-        в постоянное, чтобы сохранить защиту от replay атак.
+        КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Миграция sequence numbers и per-agent ключа
+        от unknown к зарегистрированному клиенту.
+
+        При регистрации клиента переносим его sequence state и per-agent ключ
+        из временного хранилища в постоянное.
         """
+        # Мигрируем per-agent ключ (если был сохранён для "unknown" при request_secrets)
+        if unknown_client_id == "unknown" and "unknown" in self._client_keys:
+            self._client_keys[registered_client_id] = self._client_keys.pop("unknown")
+            logger.info(f"🔑 Per-agent ключ мигрирован: unknown → {registered_client_id}")
+
         unknown_key = f"unknown_{unknown_client_id}"
         
         if unknown_key in self.unknown_client_seqs:
@@ -201,7 +243,14 @@ class EncryptionService:
         if client_id in self.encryption_states:
             del self.encryption_states[client_id]
             logger.debug(f"Очищены данные шифрования для клиента {client_id}")
-        
+
+        # При отключении зарегистрированного клиента — переносим per-agent ключ обратно на "unknown",
+        # чтобы при следующем подключении сервер мог расшифровать зашифрованный register
+        # ещё до того, как агент снова получит реальный client_id.
+        if client_id != "unknown" and client_id in self._client_keys:
+            self._client_keys["unknown"] = self._client_keys.pop(client_id)
+            logger.debug(f"Per-agent ключ перемещён обратно: {client_id} → unknown (для следующего переподключения)")
+
         # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ P0-5: Очистка временных sequence numbers для unknown клиентов
         unknown_key = f"unknown_{client_id}"
         if unknown_key in self.unknown_client_seqs:
@@ -223,6 +272,7 @@ class EncryptionService:
             "encryption_enabled": self.is_encryption_enabled(),
             "active_clients": len(self.encryption_states),
             "clients": list(self.encryption_states.keys()),
-            "unknown_clients": len(self.unknown_client_seqs)  # P0-5: добавляем статистику unknown
+            "per_agent_keys": len(self._client_keys),
+            "unknown_clients": len(self.unknown_client_seqs),
         }
 

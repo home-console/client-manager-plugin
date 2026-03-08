@@ -54,16 +54,52 @@ async def handle_connection(handler: "WebSocketHandler", websocket: WebSocket):
                     break
 
                 if isinstance(try_json, dict) and try_json.get("type") == "register":
-                    logger.info(f"📝 Получена незашифрованная регистрация от {client_id} (первоначальная синхронизация)")
-                    new_client_id = await handler._handle_registration(websocket, try_json, skip_secrets_send=True)
+                    # ✅ SHORT-TERM: Allow unencrypted registration IF enrollment_token is valid
+                    enrollment_token = try_json.get("data", {}).get("enrollment_token")
+                    _pre_validated_agent_name: str | None = None
+                    
+                    if enrollment_token:
+                        try:
+                            # Validate enrollment token (HMAC-signed, TTL check, one-time use)
+                            if not handler.runtime or not hasattr(handler.runtime, 'agent_manager'):
+                                raise ValueError("agent_manager not initialized in runtime")
+                            _pre_validated_agent_name = await handler.runtime.agent_manager.validate_enrollment_token(enrollment_token)
+                            logger.info(
+                                f"✅ [SHORT-TERM] Valid enrollment token from {client_id}: "
+                                f"agent_name={_pre_validated_agent_name} - allowing unencrypted registration"
+                            )
+                        except ValueError as token_err:
+                            logger.warning(f"❌ Invalid enrollment token for {client_id}: {token_err}")
+                            error_msg = {
+                                "type": "register_failed",
+                                "error": "invalid_enrollment_token",
+                                "message": str(token_err),
+                            }
+                            await websocket.send_text(json.dumps(error_msg))
+                            break
+                    else:
+                        logger.info(f"📝 Получена незашифрованная регистрация от {client_id}")
+
+                    # Передаём уже валидированный agent_name чтобы handle_registration
+                    # не пытался повторно валидировать уже использованный токен
+                    new_client_id = await handler._handle_registration(
+                        websocket, try_json,
+                        skip_secrets_send=True,
+                        pre_validated_agent_name=_pre_validated_agent_name,
+                    )
 
                     if new_client_id and new_client_id != "unknown":
+                        prev_client_id = client_id
                         await handler.websocket_manager.update_client_id(client_id, new_client_id)
                         client_id = new_client_id
                         handler.websocket_manager.update_metadata(
                             client_id,
                             {"registered": True, "registered_at": time.time()},
                         )
+                        # КРИТИЧЕСКОЕ: Мигрируем per-agent ключ из "unknown" → new_client_id.
+                        # Без этого последующие зашифрованные сообщения (heartbeat и т.д.)
+                        # будут расшифровываться глобальным ключом → HMAC mismatch.
+                        handler.encryption_service.migrate_unknown_to_registered(prev_client_id, new_client_id)
 
                         # Enrollment/auto-approve
                         if not handler.enrollments.is_trusted(client_id):
