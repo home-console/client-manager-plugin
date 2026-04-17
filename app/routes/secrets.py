@@ -5,10 +5,10 @@ API для управления секретами шифрования
 import secrets
 import base64
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi import APIRouter, Depends, HTTPException, Security, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from ..core.websocket_handler import WebSocketHandler
 from ..dependencies import get_websocket_handler
@@ -40,26 +40,66 @@ class RotateSecretsResponse(BaseModel):
     clients_notified: int
 
 
-def verify_admin_token(
-    credentials: HTTPAuthorizationCredentials = Security(security),
+def _is_admin_payload(payload: Dict[str, Any]) -> bool:
+    perms = payload.get("permissions", []) or []
+    roles = payload.get("roles", []) or []
+    return ("admin" in perms) or ("admin" in roles)
+
+
+async def require_admin(
     handler: WebSocketHandler = Depends(get_websocket_handler),
-) -> bool:
-    """Проверка JWT токена администратора для ротации секретов."""
-    token = credentials.credentials
-    auth_service = getattr(handler, "auth_service", None)
-    if auth_service and hasattr(auth_service, "verify_token"):
-        payload = auth_service.verify_token(token)
-        if payload:
-            return True
-        raise HTTPException(status_code=401, detail="Невалидный или истёкший токен")
-    # Fallback: без AuthService (dev) — доступ разрешён с предупреждением
-    logger.warning("Secrets rotate: AuthService недоступен, доступ разрешён (dev mode)")
-    return True
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    authorization: str | None = Header(None),
+) -> Dict[str, Any]:
+    """
+    Dependency: require admin authorization for secret management endpoints.
+
+    Supported:
+    - Static admin token (settings.admin_token) via Bearer token
+    - JWT Bearer token via handler.auth_service with 'admin' role/permission
+    """
+    if not handler:
+        raise HTTPException(status_code=503, detail="WebSocket handler unavailable")
+
+    token = (credentials.credentials or "").strip()
+    if not token and authorization:
+        token = authorization.strip()
+        if token.lower().startswith("bearer "):
+            token = token.split(" ", 1)[1].strip()
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    settings = get_settings()
+
+    # Fast path: static admin token (simple operational admin access)
+    admin_token = getattr(settings, "admin_token", None)
+    if admin_token and token == admin_token:
+        return {"subject": "admin_token", "permissions": ["admin"]}
+
+    # JWT path: handler.auth_service must be configured
+    auth_svc = getattr(handler, "auth_service", None)
+    if not auth_svc:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
+
+    try:
+        payload = auth_svc.verify_token(token)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    if not _is_admin_payload(payload):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    return payload
 
 
 @router.get("/version", response_model=SecretsVersionResponse)
 async def get_secrets_version(
-    handler: WebSocketHandler = Depends(get_websocket_handler)
+    handler: WebSocketHandler = Depends(get_websocket_handler),
+    _: Dict[str, Any] = Depends(require_admin),
 ):
     """Получить текущую версию секретов"""
     secrets_sync = handler.secrets_sync
@@ -76,7 +116,7 @@ async def get_secrets_version(
 async def rotate_secrets(
     request: RotateSecretsRequest,
     handler: WebSocketHandler = Depends(get_websocket_handler),
-    _: bool = Depends(verify_admin_token)  # Требует авторизацию
+    _: Dict[str, Any] = Depends(require_admin),
 ):
     """Ротация ключей шифрования с уведомлением всех клиентов"""
     
@@ -127,7 +167,8 @@ async def rotate_secrets(
 
 @router.get("/info")
 async def get_secrets_info(
-    handler: WebSocketHandler = Depends(get_websocket_handler)
+    handler: WebSocketHandler = Depends(get_websocket_handler),
+    _: Dict[str, Any] = Depends(require_admin),
 ):
     """Получить информацию о секретах (без самих значений)"""
     secrets_sync = handler.secrets_sync
