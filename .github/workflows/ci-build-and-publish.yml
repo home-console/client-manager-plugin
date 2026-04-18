@@ -18,9 +18,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python (for optional tests)
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Cache pip
         uses: actions/cache@v4
@@ -56,6 +56,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Контекст = корень репозитория, где лежит этот workflow.
+      # Для монорепы core-runtime-service перенесите job в корневой .github и задайте:
+      #   context: plugins/client-manager-plugin
+      #   file: plugins/client-manager-plugin/Dockerfile
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
