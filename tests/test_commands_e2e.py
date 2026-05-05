@@ -9,14 +9,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-# Ensure the plugin root is on sys.path
-THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-PLUGIN_ROOT = os.path.abspath(os.path.join(THIS_DIR, '..'))
-if PLUGIN_ROOT not in sys.path:
-    sys.path.insert(0, PLUGIN_ROOT)
+pytest.importorskip(
+    "multipart",
+    reason="python-multipart is required for client-manager-plugin e2e tests",
+)
 
-from app.main import create_app
-from app.dependencies import get_websocket_handler
+from client_manager_plugin_app.main import create_app
+from client_manager_plugin_app.dependencies import get_websocket_handler
 
 
 @pytest.fixture(scope="function")

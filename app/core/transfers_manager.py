@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 import time
 import os
 import uuid
@@ -90,7 +91,7 @@ class TransfersManager:
                     src = t.get("source_path_server")
                     if src:
                         try:
-                            tmp_dir = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+                            tmp_dir = get_settings().upload_tmp_dir
                             bname = os.path.basename(src)
                             if src.startswith(tmp_dir) or bname.startswith("upload_"):
                                 if os.path.exists(src):
@@ -102,7 +103,7 @@ class TransfersManager:
                     dest = t.get("dest_path")
                     if dest:
                         try:
-                            tmp_dir = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+                            tmp_dir = get_settings().upload_tmp_dir
                             dbname = os.path.basename(dest)
                             if dest.startswith(tmp_dir) or dbname.startswith("upload_"):
                                 if os.path.exists(dest):

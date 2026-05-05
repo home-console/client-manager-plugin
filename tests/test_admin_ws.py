@@ -1,20 +1,17 @@
 import os
-import sys
 import json
 
-# Ensure the plugin root is on sys.path
-THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-PLUGIN_ROOT = os.path.abspath(os.path.join(THIS_DIR, '..'))
-if PLUGIN_ROOT not in sys.path:
-    sys.path.insert(0, PLUGIN_ROOT)
-
+import pytest
 from fastapi.testclient import TestClient
+
+# client-manager-plugin tests require python-multipart for FastAPI Form parsing.
+pytest.importorskip("multipart", reason='python-multipart is required for client-manager-plugin e2e tests')
 
 # Ensure JWT secret is set before app startup
 os.environ.setdefault('JWT_SECRET_KEY', 'test-secret')
 
-from app.main import app
-from app.core.security.auth_service import AuthService
+from client_manager_plugin_app.main import app
+from client_manager_plugin_app.core.security.auth_service import AuthService
 
 
 def test_admin_ws_connect_and_ping():

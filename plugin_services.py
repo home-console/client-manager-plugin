@@ -19,7 +19,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
     Args:
         plugin: экземпляр ClientManagerPlugin
     """
-    registry = plugin.runtime.service_registry
+    # Канонический путь: регистрируем через helper BasePlugin (runtime.api)
     
     # ============================================================================
     # REST handlers - обёртки для HTTP endpoints
@@ -32,8 +32,8 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
             return []
         return plugin.handler.get_all_clients()
     
-    await registry.register("client_manager.list_clients", list_clients)
-    await registry.register("client_manager._impl.list_clients", list_clients)
+    await plugin.register_service("client_manager.list_clients", list_clients)
+    await plugin.register_service("client_manager._impl.list_clients", list_clients)
 
     # GET /client-manager/clients/{client_id}
     async def get_client(client_id: str, body: Any = None, **kwargs) -> Optional[Dict[str, Any]]:
@@ -55,7 +55,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
                 return client
         return None
     
-    await registry.register("client_manager.get_client", get_client)
+    await plugin.register_service("client_manager.get_client", get_client)
     
     # DELETE /client-manager/clients/{client_id}
     async def delete_client(client_id: str, body: Any = None, **kwargs) -> Dict[str, Any]:
@@ -78,7 +78,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
             return {"error": str(e)}
     
     # internal implementation (used by operation handlers)
-    await registry.register("client_manager._impl.delete_client", delete_client)
+    await plugin.register_service("client_manager._impl.delete_client", delete_client)
 
     async def delete_client_wrapper(client_id: str, body: Any = None, **kwargs) -> Dict[str, Any]:
         try:
@@ -86,11 +86,11 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
                 "type": "client_manager.delete_client",
                 "params": {"client_id": client_id},
             }
-            return await plugin.runtime.service_registry.call("admin.operations.create", op_body)
+            return await plugin.call_service("admin.operations.create", op_body)
         except Exception as e:
             return {"error": str(e)}
 
-    await registry.register("client_manager.delete_client", delete_client_wrapper)
+    await plugin.register_service("client_manager.delete_client", delete_client_wrapper)
     
     # POST /client-manager/commands/{client_id}
     async def execute_command(
@@ -141,7 +141,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
             return {"error": str(e)}
     
     # internal implementation (used by operation handlers)
-    await registry.register("client_manager._impl.execute_command", execute_command)
+    await plugin.register_service("client_manager._impl.execute_command", execute_command)
 
     async def execute_command_wrapper(client_id: str, body: Any = None, **kwargs) -> Dict[str, Any]:
         try:
@@ -149,11 +149,11 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
                 "type": "client_manager.execute_command",
                 "params": {"client_id": client_id, "body": body or {}},
             }
-            return await plugin.runtime.service_registry.call("admin.operations.create", op_body)
+            return await plugin.call_service("admin.operations.create", op_body)
         except Exception as e:
             return {"error": str(e)}
 
-    await registry.register("client_manager.execute_command", execute_command_wrapper)
+    await plugin.register_service("client_manager.execute_command", execute_command_wrapper)
     
     # GET /client-manager/commands/{client_id}/status
     async def get_command_status(client_id: str = None, command_id: str = None, body: Any = None, **kwargs) -> Dict[str, Any]:
@@ -181,7 +181,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
         except Exception as e:
             return {"error": str(e)}
     
-    await registry.register("client_manager.get_command_status", get_command_status)
+    await plugin.register_service("client_manager.get_command_status", get_command_status)
     
     # GET /client-manager/health
     async def health_check(body: Any = None, **kwargs) -> Dict[str, Any]:
@@ -192,7 +192,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
             "timestamp": __import__('datetime').datetime.utcnow().isoformat()
         }
     
-    await registry.register("client_manager.health_check", health_check)
+    await plugin.register_service("client_manager.health_check", health_check)
     
     # GET /client-manager/files/transfers
     async def list_transfers(body: Any = None, **kwargs) -> List[Dict[str, Any]]:
@@ -207,7 +207,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
         except Exception:
             return []
     
-    await registry.register("client_manager.list_transfers", list_transfers)
+    await plugin.register_service("client_manager.list_transfers", list_transfers)
     
     # POST /client-manager/universal/{client_id}/execute
     async def execute_universal_command(
@@ -257,7 +257,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
             return {"error": str(e)}
     
     # internal implementation (used by operation handlers)
-    await registry.register("client_manager._impl.execute_universal_command", execute_universal_command)
+    await plugin.register_service("client_manager._impl.execute_universal_command", execute_universal_command)
 
     async def execute_universal_command_wrapper(client_id: str, body: Any = None, **kwargs) -> Dict[str, Any]:
         try:
@@ -265,11 +265,11 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
                 "type": "client_manager.execute_universal_command",
                 "params": {"client_id": client_id, "body": body or {}},
             }
-            return await plugin.runtime.service_registry.call("admin.operations.create", op_body)
+            return await plugin.call_service("admin.operations.create", op_body)
         except Exception as e:
             return {"error": str(e)}
 
-    await registry.register("client_manager.execute_universal_command", execute_universal_command_wrapper)
+    await plugin.register_service("client_manager.execute_universal_command", execute_universal_command_wrapper)
     
     # Сервис: получить статистику
     async def get_stats() -> Dict[str, Any]:
@@ -303,7 +303,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
         
         return stats
     
-    await registry.register("client_manager.get_stats", get_stats)
+    await plugin.register_service("client_manager.get_stats", get_stats)
     
     # ============================================================================
     # WebSocket handlers
@@ -334,7 +334,7 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
             except Exception:
                 pass
     
-    await registry.register("client_manager.websocket", websocket_handler)
+    await plugin.register_service("client_manager.websocket", websocket_handler)
     
     # Сервис: обработка админского WebSocket
     async def admin_websocket_handler(websocket: Any) -> None:
@@ -450,4 +450,4 @@ async def register_services(plugin: "ClientManagerPlugin") -> None:
             import traceback
             traceback.print_exc()
     
-    await registry.register("client_manager.admin_websocket", admin_websocket_handler)
+    await plugin.register_service("client_manager.admin_websocket", admin_websocket_handler)

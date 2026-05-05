@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """Endpoints for admin->client messaging (internal use).
 
 This exposes a minimal endpoint `/api/admin/send_message` which accepts
@@ -58,8 +59,8 @@ def verify_jwt(token: str) -> Optional[Dict[str, Any]]:
                 return None
 
         if alg == 'RS256':
-            pub = os.getenv('ADMIN_JWT_PUBLIC_KEY') or None
-            pub_file = os.getenv('ADMIN_JWT_PUBLIC_KEY_FILE') or None
+            pub = get_settings().admin_jwt_public_key
+            pub_file = get_settings().admin_jwt_public_key_file
             if not pub and pub_file:
                 try:
                     with open(pub_file, 'r') as f:
@@ -79,7 +80,7 @@ def verify_jwt(token: str) -> Optional[Dict[str, Any]]:
                 return None
         elif alg == 'HS256' or True:
             # HS256 or fallback to ADMIN_JWT_SECRET
-            secret = os.getenv('ADMIN_JWT_SECRET', '')
+            secret = get_settings().admin_jwt_secret
             if not secret:
                 # legacy: maybe ADMIN_TOKEN is used instead
                 return None
@@ -113,7 +114,7 @@ def verify_jwt(token: str) -> Optional[Dict[str, Any]]:
 @router.post("/admin/send_message", tags=["Admin"])
 async def admin_send_message(payload: Dict[str, Any], request: Request, handler = Depends(get_websocket_handler)):
     # Prefer JWT signed with HS256 when ADMIN_JWT_SECRET is set. Fallback to simple ADMIN_TOKEN.
-    jwt_secret = os.getenv('ADMIN_JWT_SECRET', '')
+    jwt_secret = get_settings().admin_jwt_secret
     auth_hdr = request.headers.get('authorization', '')
 
     if auth_hdr.startswith('Bearer '):
@@ -121,14 +122,14 @@ async def admin_send_message(payload: Dict[str, Any], request: Request, handler 
         payload_jwt = verify_jwt(token)
         if payload_jwt is None:
             # fallback to legacy ADMIN_TOKEN if set
-            admin_token = os.getenv('ADMIN_TOKEN', '')
+            admin_token = get_settings().admin_token
             if admin_token and token == admin_token:
                 payload_jwt = {'legacy': True}
             else:
                 raise HTTPException(status_code=403, detail='invalid token')
     else:
         # No Bearer header — try ADMIN_TOKEN headerless match
-        admin_token = os.getenv('ADMIN_TOKEN', '')
+        admin_token = get_settings().admin_token
         if admin_token:
             raise HTTPException(status_code=403, detail='forbidden')
 

@@ -1,6 +1,6 @@
 # Client Manager Service — Полная архитектура и документация
 
-Этот документ — максимально подробное техническое описание `client-manager-service`: архитектура, компоненты, форматы сообщений, последовательности, требования окружения, CI/Release рекомендации, runbook и отладочные инструкции.
+Этот документ — максимально подробное техническое описание плагина **client-manager-plugin** (историческое имя артефакта/образа — *client-manager-service*): архитектура, компоненты, форматы сообщений, последовательности, требования окружения, CI/Release рекомендации, runbook и отладочные инструкции.
 
 Целевая аудитория: разработчики, DevOps-инженеры, интеграторы и операторы.
 
@@ -8,7 +8,7 @@
 
 ## Краткое назначение
 
-`client-manager-service` — серверная часть системы управления удалёнными агентами (remote-client). Основные обязанности:
+**Client Manager** (каталог `plugins/client-manager-plugin`) — серверная часть системы управления удалёнными агентами (remote-client). Основные обязанности:
 
 - Приём WebSocket-соединений от агентов и поддержание lifecycle (registration, heartbeat).
 - Доставка команд агентам и сбор результатов (chunking, resume).
@@ -184,8 +184,8 @@ curl -k -X POST https://localhost:10000/api/installations/remote-client \
 Пример скрипта локальной сборки:
 
 ```bash
-# сборка и тегирование
-docker build -t homeconsole-client-manager:dev ./client-manager-service
+# сборка и тегирование (контекст — каталог плагина)
+docker build -f Dockerfile -t homeconsole-client-manager:dev .
 docker tag homeconsole-client-manager:dev homeconsole-client-manager:latest
 ```
 

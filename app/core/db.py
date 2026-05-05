@@ -4,16 +4,17 @@
 Реализация минимальна и предназначена для использования в `asyncio.to_thread`.
 """
 from typing import List, Dict, Any, Optional
-import os
 import json
 import time
 import logging
+
+from client_manager_plugin_app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 def _get_dsn() -> Optional[str]:
-    return os.getenv('DATABASE_URL') or os.getenv('PGBOUNCER_URL') or os.getenv('PG_URL')
+    return get_settings().database_url
 
 
 def _connect():

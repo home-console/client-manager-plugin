@@ -21,6 +21,8 @@ import tempfile
 import logging
 import threading
 
+from client_manager_plugin_app.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
@@ -33,7 +35,7 @@ except Exception:
 
 def _get_queue_path() -> str:
     # configurable via env
-    return os.getenv('AUDIT_QUEUE_FILE', '/var/lib/client_manager/audit_queue.jsonl')
+    return get_settings().audit_queue_file
 
 
 def ensure_queue_dir():
@@ -139,19 +141,36 @@ def mark_sent(row_id: str) -> bool:
         fd, tmpname = tempfile.mkstemp(prefix='audit_queue_', dir=dirp)
         tmp_fd = fd
         # Use file lock while reading/writing
-        try:
-            if _have_fcntl:
+        if _have_fcntl:
+            with open(path, 'r', encoding='utf-8') as in_f:
+                try:
+                    fcntl.flock(in_f.fileno(), fcntl.LOCK_SH)
+                except Exception:
+                    pass
+                recs = list(in_f)
+                try:
+                    fcntl.flock(in_f.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+            with open(tmpname, 'w', encoding='utf-8') as out_f:
+                for line in recs:
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        out_f.write(line)
+                        continue
+                    if rec.get('id') == row_id:
+                        rec['sent'] = True
+                        rec['sent_at'] = time.time()
+                    out_f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+            os.replace(tmpname, path)
+        else:
+            with _lock:
                 with open(path, 'r', encoding='utf-8') as in_f:
-                    try:
-                        fcntl.flock(in_f.fileno(), fcntl.LOCK_SH)
-                    except Exception:
-                        pass
                     recs = list(in_f)
-                    try:
-                        fcntl.flock(in_f.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
-                with open(tmpname, 'w', encoding='utf-8') as out_f:
+                with os.fdopen(fd, 'w', encoding='utf-8') as out_f:
                     for line in recs:
                         if not line.strip():
                             continue
@@ -164,25 +183,7 @@ def mark_sent(row_id: str) -> bool:
                             rec['sent'] = True
                             rec['sent_at'] = time.time()
                         out_f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-                os.replace(tmpname, path)
-            else:
-                with _lock:
-                    with open(path, 'r', encoding='utf-8') as in_f:
-                        recs = list(in_f)
-                    with os.fdopen(fd, 'w', encoding='utf-8') as out_f:
-                        for line in recs:
-                            if not line.strip():
-                                continue
-                            try:
-                                rec = json.loads(line)
-                            except Exception:
-                                out_f.write(line)
-                                continue
-                            if rec.get('id') == row_id:
-                                rec['sent'] = True
-                                rec['sent_at'] = time.time()
-                            out_f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-                os.replace(tmpname, path)
+            os.replace(tmpname, path)
         return True
     except Exception:
         logger.exception('Failed to mark audit row as sent in FS')
@@ -202,50 +203,49 @@ def purge_old(ttl_seconds: int = 60 * 60 * 24 * 7):
             return
         cutoff = time.time() - ttl_seconds
         # Keep records that are either unsent, or sent but newer than cutoff
-        try:
-            if _have_fcntl:
-                with open(path, 'r', encoding='utf-8') as in_f:
+        if _have_fcntl:
+            with open(path, 'r', encoding='utf-8') as in_f:
+                try:
+                    fcntl.flock(in_f.fileno(), fcntl.LOCK_SH)
+                except Exception:
+                    pass
+                recs = list(in_f)
+                try:
+                    fcntl.flock(in_f.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+            dirp = os.path.dirname(path) or '.'
+            fd, tmpname = tempfile.mkstemp(prefix='audit_queue_purge_', dir=dirp)
+            with os.fdopen(fd, 'w', encoding='utf-8') as out_f:
+                for line in recs:
+                    if not line.strip():
+                        continue
                     try:
-                        fcntl.flock(in_f.fileno(), fcntl.LOCK_SH)
+                        rec = json.loads(line)
                     except Exception:
-                        pass
-                    recs = list(in_f)
-                    try:
-                        fcntl.flock(in_f.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
+                        continue
+                    sent = rec.get('sent', False)
+                    sent_at = rec.get('sent_at') or rec.get('queued_at', 0)
+                    if (not sent) or (sent_at >= cutoff):
+                        out_f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+            os.replace(tmpname, path)
+        else:
+            with _lock:
                 dirp = os.path.dirname(path) or '.'
                 fd, tmpname = tempfile.mkstemp(prefix='audit_queue_purge_', dir=dirp)
                 with os.fdopen(fd, 'w', encoding='utf-8') as out_f:
-                    for line in recs:
-                        if not line.strip():
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except Exception:
-                            continue
-                        sent = rec.get('sent', False)
-                        sent_at = rec.get('sent_at') or rec.get('queued_at', 0)
-                        if (not sent) or (sent_at >= cutoff):
-                            out_f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-                os.replace(tmpname, path)
-            else:
-                with _lock:
-                    dirp = os.path.dirname(path) or '.'
-                    fd, tmpname = tempfile.mkstemp(prefix='audit_queue_purge_', dir=dirp)
-                    with os.fdopen(fd, 'w', encoding='utf-8') as out_f:
-                        with open(path, 'r', encoding='utf-8') as in_f:
-                            for line in in_f:
-                                if not line.strip():
-                                    continue
-                                try:
-                                    rec = json.loads(line)
-                                except Exception:
-                                    continue
-                                sent = rec.get('sent', False)
-                                sent_at = rec.get('sent_at') or rec.get('queued_at', 0)
-                                if (not sent) or (sent_at >= cutoff):
-                                    out_f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-                    os.replace(tmpname, path)
+                    with open(path, 'r', encoding='utf-8') as in_f:
+                        for line in in_f:
+                            if not line.strip():
+                                continue
+                            try:
+                                rec = json.loads(line)
+                            except Exception:
+                                continue
+                            sent = rec.get('sent', False)
+                            sent_at = rec.get('sent_at') or rec.get('queued_at', 0)
+                            if (not sent) or (sent_at >= cutoff):
+                                out_f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+            os.replace(tmpname, path)
     except Exception:
         logger.exception('Failed to purge old audit entries')

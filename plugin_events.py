@@ -29,7 +29,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
         plugin: экземпляр ClientManagerPlugin
         handler: WebSocketHandler instance
     """
-    event_bus = plugin.runtime.event_bus
+    # Канонический путь: публикация через helper BasePlugin (runtime.api/event_bus facade)
     
     # Hook для подключения клиента
     original_connect = handler.websocket_manager.connect
@@ -40,7 +40,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
         
         # Публикуем событие о подключении
         try:
-            await event_bus.publish("client.connected", {
+            await plugin.publish_event("client.connected", {
                 "client_id": client_id,
                 "metadata": metadata or {},
                 "source": "client_manager"
@@ -48,7 +48,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
         except Exception as e:
             # Не ломаем подключение из-за ошибки публикации события
             try:
-                await plugin.runtime.service_registry.call(
+                await plugin.call_service(
                     "logger.log",
                     level="warning",
                     message=f"Ошибка публикации события client.connected: {e}",
@@ -81,14 +81,14 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
         
         # Публикуем событие о отключении
         try:
-            await event_bus.publish("client.disconnected", {
+            await plugin.publish_event("client.disconnected", {
                 "client_id": client_id,
                 "client_info": client_info,
                 "source": "client_manager"
             })
         except Exception as e:
             try:
-                await plugin.runtime.service_registry.call(
+                await plugin.call_service(
                     "logger.log",
                     level="warning",
                     message=f"Ошибка публикации события client.disconnected: {e}",
@@ -111,7 +111,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
             command_id = f"{client_id}_{command[:50]}_{id(command)}"
             
             try:
-                await event_bus.publish("command.started", {
+                await plugin.publish_event("command.started", {
                     "command_id": command_id,
                     "client_id": client_id,
                     "command": command,
@@ -125,7 +125,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
                 
                 # Публикуем событие о завершении
                 try:
-                    await event_bus.publish("command.completed", {
+                    await plugin.publish_event("command.completed", {
                         "command_id": command_id,
                         "client_id": client_id,
                         "command": command,
@@ -140,7 +140,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
             except Exception as e:
                 # Публикуем событие об ошибке
                 try:
-                    await event_bus.publish("command.failed", {
+                    await plugin.publish_event("command.failed", {
                         "command_id": command_id,
                         "client_id": client_id,
                         "command": command,
@@ -163,7 +163,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
             file_id = f"{client_id}_{file_path}_{len(content)}"
             
             try:
-                await event_bus.publish("file.upload_started", {
+                await plugin.publish_event("file.upload_started", {
                     "file_id": file_id,
                     "client_id": client_id,
                     "file_path": file_path,
@@ -177,7 +177,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
                 result = await original_upload(client_id, file_path, content, **kwargs)
                 
                 try:
-                    await event_bus.publish("file.upload_completed", {
+                    await plugin.publish_event("file.upload_completed", {
                         "file_id": file_id,
                         "client_id": client_id,
                         "file_path": file_path,
@@ -192,7 +192,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
                 
             except Exception as e:
                 try:
-                    await event_bus.publish("file.upload_failed", {
+                    await plugin.publish_event("file.upload_failed", {
                         "file_id": file_id,
                         "client_id": client_id,
                         "file_path": file_path,
@@ -213,7 +213,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
             file_id = f"{client_id}_{file_path}_download"
             
             try:
-                await event_bus.publish("file.download_started", {
+                await plugin.publish_event("file.download_started", {
                     "file_id": file_id,
                     "client_id": client_id,
                     "file_path": file_path,
@@ -226,7 +226,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
                 content = await original_download(client_id, file_path, **kwargs)
                 
                 try:
-                    await event_bus.publish("file.download_completed", {
+                    await plugin.publish_event("file.download_completed", {
                         "file_id": file_id,
                         "client_id": client_id,
                         "file_path": file_path,
@@ -240,7 +240,7 @@ async def setup_event_integration(plugin: "ClientManagerPlugin", handler: Any) -
                 
             except Exception as e:
                 try:
-                    await event_bus.publish("file.download_failed", {
+                    await plugin.publish_event("file.download_failed", {
                         "file_id": file_id,
                         "client_id": client_id,
                         "file_path": file_path,
@@ -263,7 +263,7 @@ async def publish_heartbeat_event(plugin: "ClientManagerPlugin", client_id: str)
         client_id: ID клиента
     """
     try:
-        await plugin.runtime.event_bus.publish("client.heartbeat", {
+        await plugin.publish_event("client.heartbeat", {
             "client_id": client_id,
             "source": "client_manager"
         })

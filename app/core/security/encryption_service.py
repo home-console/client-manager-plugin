@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """
 Сервис шифрования для E2E защиты
 """
@@ -20,8 +21,8 @@ class EncryptionService:
     
     def __init__(self, encryption_key: str = None, salt: bytes = None):
         # Ключ шифрования обязателен: без него работа запрещена
-        self.encryption_key = encryption_key or os.getenv("SERVER_ENCRYPTION_KEY")
-        salt_env = os.getenv("SERVER_ENCRYPTION_SALT")
+        self.encryption_key = encryption_key or get_settings().server_encryption_key
+        salt_env = get_settings().encryption_salt_str
         if salt is not None:
             self.salt = salt
         elif salt_env:

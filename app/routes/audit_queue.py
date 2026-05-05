@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 from fastapi import APIRouter, HTTPException, Depends, Header
 from ..dependencies import get_websocket_handler
 from typing import Any, Dict, List
@@ -46,11 +47,12 @@ async def audit_queue_stats(payload: Dict[str, Any] = Depends(require_admin), ha
     using_fs = getattr(handler, 'fs_available', False)
     pending_count = 0
     sample = []
-    queue_file = os.getenv('AUDIT_QUEUE_FILE', '/var/lib/client_manager/audit_queue.jsonl')
+    queue_file = get_settings().audit_queue_file
 
     try:
         if using_fs:
-            rows = await __import__('asyncio').get_event_loop().run_in_executor(None, handler._fs.fetch_pending, 100)
+            # Use public audit_service.fetch_pending instead of accessing protected _fs
+            rows = await __import__('asyncio').get_event_loop().run_in_executor(None, handler.audit_service.fetch_pending, 100)
             pending_count = len(rows)
             sample = rows[:10]
         else:
@@ -77,7 +79,8 @@ async def audit_queue_peek(limit: int = 20, payload: Dict[str, Any] = Depends(re
 
     try:
         if getattr(handler, 'fs_available', False):
-            rows = await __import__('asyncio').get_event_loop().run_in_executor(None, handler._fs.fetch_pending, limit)
+            # Use audit_service.fetch_pending instead of protected _fs
+            rows = await __import__('asyncio').get_event_loop().run_in_executor(None, handler.audit_service.fetch_pending, limit)
             return rows
         else:
             pending = getattr(handler, '_audit_pending', [])

@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """
 Structured logging с JSON форматом и correlation IDs
 """
@@ -217,8 +218,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         
         # Пропускаем логирование автоматических запросов для уменьшения шума
         import os
-        log_health_checks = os.getenv("LOG_HEALTH_CHECKS", "false").lower() == "true"
-        log_api_clients = os.getenv("LOG_API_CLIENTS", "false").lower() == "true"
+        log_health_checks = get_settings().log_health_checks
+        log_api_clients = get_settings().log_api_clients
 
         # Health-чек запросы
         is_health_check = request.url.path in ["/health", "/api/health"] and request.method == "GET" and not log_health_checks

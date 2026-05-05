@@ -1,4 +1,5 @@
 from __future__ import annotations
+from client_manager_plugin_app.config import get_settings
 
 import asyncio
 import json
@@ -101,7 +102,7 @@ class RegistrationHandlers:
 
         # Автоматическое утверждение для зашифрованных регистраций
         if not is_trusted:
-            auto_approve = str(os.getenv("AUTO_APPROVE_ENROLLMENTS", "false")).lower() in ("1", "true", "yes")
+            auto_approve = get_settings().auto_approve_enrollments
             if auto_approve:
                 h.enrollments.approve(client_id)
                 is_trusted = True
@@ -144,7 +145,7 @@ class RegistrationHandlers:
                 await websocket.send_text(encrypted_response)
                 logger.info(f"✅ Регистрация завершена для клиента {client_id} (trusted={is_trusted})")
                 # После успешной регистрации (зашифрованной) запустим мониторинг, если разрешено
-                ws_mon_disable = str(os.getenv("WS_MONITOR_DISABLE", "true")).lower() in ("1", "true", "yes")
+                ws_mon_disable = get_settings().ws_monitor_disable
                 if not ws_mon_disable and is_trusted:
                     await asyncio.sleep(0.5)
                     await h.websocket_manager.start_monitoring(client_id)
@@ -160,7 +161,7 @@ class RegistrationHandlers:
     async def send_enrollment_result(self, client_id: str, status: str = "approved") -> None:
         """Отправить клиенту результат утверждения (approved/rejected)."""
         h = self.handler
-        pinned_spkis_env = os.getenv("SERVER_PINNED_SPKIS", "").strip()
+        pinned_spkis_env = get_settings().server_pinned_spkis.strip()
         pinned_list = [s.strip() for s in pinned_spkis_env.split(",") if s.strip()] if pinned_spkis_env else []
         message = {
             "type": "enrollment_result",

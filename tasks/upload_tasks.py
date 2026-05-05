@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 import os
 import requests
 import math
@@ -6,8 +7,8 @@ from .celery_app import celery
 
 logger = get_task_logger(__name__)
 
-CHUNK_SIZE = int(os.getenv("UPLOAD_TASK_CHUNK_SIZE", str(4 * 1024 * 1024)))  # default 4 MiB
-CM_BASE = os.getenv("CM_BASE_URL", "http://client_manager:10000")
+CHUNK_SIZE = get_settings().upload_task_chunk_size  # default 4 MiB
+CM_BASE = get_settings().cm_base_url
 
 
 @celery.task(bind=True, max_retries=3, default_retry_delay=5)

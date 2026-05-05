@@ -13,17 +13,36 @@
 
 ## 🚀 Быстрый старт
 
-### Через Docker Compose (рекомендуется)
+### Режимы развёртывания
+
+- **Встроенный плагин** — загрузка через `PluginManager` ядра HomeConsole (общий процесс с runtime, прокси к сервисам ядра).
+- **Отдельный контейнер / sidecar** — этот каталог собирается в **самодостаточный** образ: без копирования всего `core-runtime-service` и без обязательного сопряжения с ядром в одном процессе (интеграция по HTTP/WebSocket/API с внешним core при необходимости).
+- **SDK** — зависимость `home-console-sdk` для протоколов/клиентов; отдельный «режим SDK» в образе не нужен: контейнер уже может жить автономно, а SDK подключается как библиотека.
+
+### Docker (standalone-образ)
+
+Контекст сборки — **каталог плагина** (не корень монорепы):
 
 ```bash
-# В корне проекта NewHomeConsole
-docker-compose up -d client_manager
+cd plugins/client-manager-plugin
+docker build -t client-manager-plugin .
+docker run --rm -p 10000:10000 client-manager-plugin
 ```
 
-### Standalone
+Из корня репозитория `core-runtime-service`:
 
 ```bash
-cd client-manager-service
+docker build -f plugins/client-manager-plugin/Dockerfile -t client-manager-plugin plugins/client-manager-plugin
+```
+
+### Через Docker Compose
+
+Если в корне монорепы есть сервис `client_manager`, укажите в compose `build` с `context: plugins/client-manager-plugin` и `dockerfile: Dockerfile` (или путь к этому `Dockerfile`).
+
+### Локально (без Docker)
+
+```bash
+cd plugins/client-manager-plugin
 pip install -r requirements.txt
 python run_server.py
 ```
@@ -38,7 +57,7 @@ python run_server.py
 ## 📂 Структура
 
 ```
-client-manager-service/
+plugins/client-manager-plugin/
 ├── app/
 │   ├── main.py           # FastAPI приложение
 │   ├── config.py         # Конфигурация
@@ -46,7 +65,8 @@ client-manager-service/
 │   ├── routes/           # API роуты
 │   └── schemas/          # Pydantic схемы
 ├── run_server.py         # Скрипт запуска
-└── requirements.txt
+├── requirements.txt
+└── Dockerfile            # образ только из этого каталога
 ```
 
 ---

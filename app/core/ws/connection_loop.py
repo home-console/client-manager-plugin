@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """
 Основной цикл обработки WebSocket вынесен из websocket_handler.py.
 Функция handle_connection сохраняет существующую логику, но изолирует её в отдельный модуль.
@@ -106,11 +107,7 @@ async def handle_connection(handler: "WebSocketHandler", websocket: WebSocket):
                             try:
                                 data_dict = try_json.get("data", {})
                                 handler.enrollments.add_pending(client_id, data_dict)
-                                auto_approve = str(os.getenv("AUTO_APPROVE_ENROLLMENTS", "true")).lower() in (
-                                    "1",
-                                    "true",
-                                    "yes",
-                                )
+                                auto_approve = get_settings().auto_approve_enrollments
                                 logger.info(f"🔍 AUTO_APPROVE_ENROLLMENTS={auto_approve} для клиента {client_id}")
                                 if auto_approve:
                                     handler.enrollments.approve(client_id)
@@ -142,7 +139,7 @@ async def handle_connection(handler: "WebSocketHandler", websocket: WebSocket):
                                 logger.error(f"❌ Ошибка обработки enrollment для {client_id}: {e}")
 
                         # Мониторинг
-                        ws_mon_disable = str(os.getenv("WS_MONITOR_DISABLE", "true")).lower() in ("1", "true", "yes")
+                        ws_mon_disable = get_settings().ws_monitor_disable
                         if not ws_mon_disable and handler.enrollments.is_trusted(client_id):
                             await asyncio.sleep(0.5)
                             await handler.websocket_manager.start_monitoring(client_id)

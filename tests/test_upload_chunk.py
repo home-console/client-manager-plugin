@@ -1,19 +1,15 @@
 import os
-import sys
 import tempfile
 
-# Ensure the plugin root is on sys.path
-THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-PLUGIN_ROOT = os.path.abspath(os.path.join(THIS_DIR, '..'))
-if PLUGIN_ROOT not in sys.path:
-    sys.path.insert(0, PLUGIN_ROOT)
-
+import pytest
 from fastapi.testclient import TestClient
 
 # Ensure JWT secret is set before app startup
 os.environ.setdefault('JWT_SECRET_KEY', 'test-secret')
 
-from app.main import app
+pytest.importorskip("multipart", reason='python-multipart is required for client-manager-plugin e2e tests')
+
+from client_manager_plugin_app.main import app
 
 
 def test_upload_chunk_creates_transfer_and_writes():

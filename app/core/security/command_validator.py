@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """
 Валидатор команд с защитой от injection и whitelist
 """
@@ -36,10 +37,10 @@ class CommandValidator:
         self.allowed_special_chars = set(".-_/=:,@")
         
         # Максимальная длина команды
-        self.max_command_length = int(os.getenv("MAX_COMMAND_LENGTH", "1000"))
+        self.max_command_length = get_settings().max_command_length
         
         # Режим валидации (strict, permissive или disabled)
-        validation_mode = os.getenv("COMMAND_VALIDATION_MODE", "strict")
+        validation_mode = get_settings().command_validation_mode
         if validation_mode.lower() in ["disabled", "off", "none"]:
             self.validation_mode = "disabled"
         else:

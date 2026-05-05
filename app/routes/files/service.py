@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 import asyncio as _asyncio
 import hashlib
 import json
@@ -28,7 +29,7 @@ except Exception:
 
 def _enqueue_or_fallback(handler, client_id: str, transfer_id: str, src_path: str, start_offset: int = 0):
     """Попытка поставить задачу в Celery (если доступна), иначе запустить фоновой корутиной."""
-    if celery_app and os.getenv("CELERY_BROKER_URL"):
+    if celery_app and get_settings().celery_broker_url:
         try:
             res = celery_app.send_task(
                 "tasks.upload_tasks.process_upload_task",
@@ -56,8 +57,8 @@ def _enqueue_or_fallback(handler, client_id: str, transfer_id: str, src_path: st
 
 async def _background_send(handler, client_id: str, transfer_id: str, src_path: str, start_offset: int = 0):
     """Фоновая отправка файла с серверной стороны с ретраями."""
-    max_retries = int(os.getenv("SEND_BG_RETRIES", "3"))
-    base_backoff = float(os.getenv("SEND_BG_BACKOFF", "2.0"))
+    max_retries = get_settings().send_bg_retries
+    base_backoff = get_settings().send_bg_backoff
 
     attempt = 0
     while attempt < max_retries:
@@ -116,7 +117,7 @@ async def handle_multipart_upload(request, handler):
         raise HTTPException(status_code=400, detail="client_id, path и file обязательны для multipart upload")
 
     try:
-        tmp_dir = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+        tmp_dir = get_settings().upload_tmp_dir
         fd, tmp_path = tempfile.mkstemp(prefix="upload_", dir=tmp_dir)
         os.close(fd)
         with open(tmp_path, "wb") as out_f:
@@ -195,7 +196,7 @@ async def handle_json_upload(request, handler):
 async def upload_and_start(client_id: str, path: str, direction: str, file, handler, original_filename: str | None):
     """Приём multipart файла и немедленный запуск отправки на клиента."""
     try:
-        tmp_dir = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+        tmp_dir = get_settings().upload_tmp_dir
         fd, tmp_path = tempfile.mkstemp(prefix="upload_", dir=tmp_dir)
         os.close(fd)
         with open(tmp_path, "wb") as out_f:
@@ -237,7 +238,7 @@ async def upload_chunk(
     if not client_id or not path:
         raise HTTPException(status_code=400, detail="client_id и path обязательны")
 
-    tmp_dir = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+    tmp_dir = get_settings().upload_tmp_dir
     if transfer_id:
         t = handler.transfers.get(transfer_id)
         if not t:

@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
+from client_manager_plugin_app.config import get_settings
 import jwt
 from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 
@@ -19,15 +20,15 @@ class AuthService:
     """Сервис аутентификации"""
     
     def __init__(self, secret_key: str = None, algorithm: str = "HS256"):
-        self.secret_key = secret_key or os.getenv("JWT_SECRET_KEY")
+        self.secret_key = secret_key or get_settings().jwt_secret_key
         if not self.secret_key:
             raise RuntimeError("JWT_SECRET_KEY must be set via environment for AuthService")
         self.algorithm = algorithm
-        self.token_expire_minutes = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+        self.token_expire_minutes = get_settings().jwt_expire_minutes
         
         # JWT claims для валидации
-        self.issuer = os.getenv("JWT_ISSUER", "remote-client-server")
-        self.audience = os.getenv("JWT_AUDIENCE", "remote-client")
+        self.issuer = get_settings().jwt_issuer
+        self.audience = get_settings().jwt_audience
         
         # Черный список отозванных токенов (в продакшене использовать Redis)
         self.revoked_tokens: set = set()

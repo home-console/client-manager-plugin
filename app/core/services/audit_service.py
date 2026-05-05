@@ -1,4 +1,5 @@
 from __future__ import annotations
+from client_manager_plugin_app.config import get_settings
 
 import asyncio
 import http.client
@@ -34,6 +35,47 @@ class AuditService:
         except Exception:
             logger.info("FS persistence unavailable - using in-memory audit queue")
 
+    def fetch_pending(self, limit: int):
+        """Возвращает до `limit` ожидающих записей очереди.
+
+        Поддерживает как файловую (JSONL) реализацию через self._fs,
+        так и in-memory очередь. Возвращает список строк в формате
+        [{'id': <id|None>, 'payload': <payload>}, ...].
+        """
+        try:
+            if getattr(self, "fs_available", False):
+                return self._fs.fetch_pending(limit)
+            # in-memory queue
+            with self._audit_lock:
+                pending = list(self._audit_pending)[:limit]
+            return [{
+                'id': None,
+                'payload': item.get('payload')
+            } for item in pending]
+        except Exception:
+            logger.exception("fetch_pending failed")
+            return []
+
+    def pending_count(self) -> int:
+        """Return the number of pending audit rows.
+
+        For FS-backed queue this asks the FS backend, otherwise returns
+        the length of the in-memory queue.
+        """
+        try:
+            if getattr(self, "fs_available", False):
+                # Assume _fs exposes a count or list-like fetch; fall back to fetching a large slice
+                try:
+                    return int(self._fs.count_pending())
+                except Exception:
+                    rows = self._fs.fetch_pending(1000000)
+                    return len(rows or [])
+            with self._audit_lock:
+                return len(self._audit_pending)
+        except Exception:
+            logger.exception("pending_count failed")
+            return 0
+
     async def start_background_tasks(self):
         """Запуск фоновых задач мониторинга core и флеша очереди аудита."""
         if not getattr(self, "_core_monitor_task", None):
@@ -44,7 +86,7 @@ class AuditService:
     def _is_core_reachable_sync(self) -> bool:
         """Synchronous check if CORE_ADMIN_URL/health responds 2xx."""
         try:
-            base = os.getenv("CORE_ADMIN_URL", "http://127.0.0.1:11000")
+            base = get_settings().core_admin_url
             b = _parse(base)
             scheme = (b.scheme or "http").lower()
             host = b.hostname or "127.0.0.1"
@@ -90,7 +132,7 @@ class AuditService:
     def _post_audit_sync(self, payload: dict) -> bool:
         """Синхронная отправка аудита в core admin API. True при успехе."""
         try:
-            base = os.getenv("CORE_ADMIN_URL", "http://127.0.0.1:11000")
+            base = get_settings().core_admin_url
             b = _parse(base)
             scheme = (b.scheme or "http").lower()
             host = b.hostname or "127.0.0.1"

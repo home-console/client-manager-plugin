@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """
 Админские эндпоинты для TOFU-enrollment: список, approve, reject
 """
@@ -16,7 +17,7 @@ security = HTTPBearer()
 
 def _require_admin(credentials: HTTPAuthorizationCredentials = Security(security)) -> None:
     token = credentials.credentials
-    admin_token = os.getenv("ADMIN_TOKEN")
+    admin_token = get_settings().admin_token
     if not admin_token or token != admin_token:
         raise HTTPException(status_code=403, detail="Forbidden")
 

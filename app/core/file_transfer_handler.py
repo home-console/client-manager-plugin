@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 import base64
 import hashlib
 import os
@@ -18,7 +19,7 @@ class FileTransferHandler:
         self.encryption_service = encryption_service
         # Лимиты (MVP) c конфигом из ENV
         try:
-            self.max_chunk_size = int(os.getenv("MAX_CHUNK_SIZE", str(1 << 22)))  # 4 MiB
+            self.max_chunk_size = get_settings().max_chunk_size  # 4 MiB
         except Exception:
             self.max_chunk_size = 1 << 22
         # Политики путей и лимитов настраиваются динамически сервисом (без ENV)
@@ -26,11 +27,11 @@ class FileTransferHandler:
         self.allowed_base_dir: str | None = None  # если задана — писать можно только внутри неё
         # Лимиты
         try:
-            self.max_transfer_size = int(os.getenv("MAX_TRANSFER_SIZE", "0")) or None  # bytes; None = без лимита
+            self.max_transfer_size = get_settings().file_max_transfer_size  # bytes; None = без лимита
         except Exception:
             self.max_transfer_size = None
         try:
-            self.per_client_quota_bytes = int(os.getenv("PER_CLIENT_QUOTA_BYTES", "0")) or None
+            self.per_client_quota_bytes = get_settings().file_per_client_quota_bytes
         except Exception:
             self.per_client_quota_bytes = None
 

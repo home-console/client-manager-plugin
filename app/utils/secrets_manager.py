@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """
 Менеджер безопасного хранения секретов для Python сервера
 Использует keyring (System Keychain/Credential Manager) или интеграцию с Vault
@@ -291,9 +292,9 @@ def get_secrets_manager() -> SecretsManager:
     global _secrets_manager
     if _secrets_manager is None:
         # Проверяем настройки Vault из ENV
-        use_vault = os.getenv("USE_VAULT", "false").lower() == "true"
-        vault_url = os.getenv("VAULT_URL")
-        vault_token = os.getenv("VAULT_TOKEN")
+        use_vault = get_settings().use_vault
+        vault_url = get_settings().vault_url
+        vault_token = get_settings().vault_token
         
         _secrets_manager = SecretsManager(
             use_vault=use_vault,

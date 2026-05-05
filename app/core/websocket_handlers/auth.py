@@ -1,4 +1,5 @@
 from __future__ import annotations
+from client_manager_plugin_app.config import get_settings
 
 import base64
 import logging
@@ -185,7 +186,7 @@ class AuthHandlers:
             allow_downgrade = getattr(settings, "allow_tls_downgrade", False)
 
             # Проверяем окружение для дополнительных предупреждений
-            env = os.getenv("ENVIRONMENT", os.getenv("ENV", "production")).lower()
+            env = get_settings().environment.lower()
             is_production = env in ("production", "prod", "live")
 
             if allow_downgrade:

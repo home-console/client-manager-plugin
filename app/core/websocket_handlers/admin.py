@@ -1,4 +1,5 @@
 from __future__ import annotations
+from client_manager_plugin_app.config import get_settings
 
 import asyncio
 import json
@@ -116,7 +117,7 @@ class AdminHandlers:
                         from urllib.parse import urlparse as _parse
                         import datetime
 
-                        base = os.getenv("CORE_ADMIN_URL", "http://127.0.0.1:11000")
+                        base = get_settings().core_admin_url
                         b = _parse(base)
                         scheme = (b.scheme or "http").lower()
                         host = b.hostname or "127.0.0.1"
@@ -141,7 +142,7 @@ class AdminHandlers:
                             }
                         ).encode("utf-8")
                         hdrs = {"Content-Type": "application/json"}
-                        admin_token = os.getenv("ADMIN_TOKEN", "")
+                        admin_token = get_settings().admin_token
                         if admin_token:
                             hdrs["Authorization"] = f"Bearer {admin_token}"
                         conn.request("POST", path, body=body, headers=hdrs)

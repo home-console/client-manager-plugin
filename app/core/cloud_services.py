@@ -1,3 +1,4 @@
+from client_manager_plugin_app.config import get_settings
 """
 Интеграция с облачными сервисами для умного дома
 """
@@ -247,8 +248,8 @@ class CloudManager:
 
     def __init__(self):
         self.services: Dict[str, CloudService] = {}
-        self.auth_service_url = os.getenv("AUTH_SERVICE_URL", "http://127.0.0.1:8000")
-        self.internal_token = os.getenv("INTERNAL_SERVICE_TOKEN", "internal-service-token")
+        self.auth_service_url = get_settings().auth_service_url
+        self.internal_token = get_settings().internal_service_token
         self._load_services()
 
     def _load_services(self):
@@ -257,12 +258,12 @@ class CloudManager:
         # Включить: CLIENT_MANAGER_FETCH_CLOUD_TOKENS=1
         auth_tokens = (
             self._get_tokens_from_auth_service()
-            if os.getenv("CLIENT_MANAGER_FETCH_CLOUD_TOKENS", "").strip() == "1"
+            if get_settings().fetch_cloud_tokens
             else {}
         )
 
         # Яндекс.Диск
-        if yandex_token := auth_tokens.get("yandex_disk") or os.getenv("YANDEX_DISK_TOKEN"):
+        if yandex_token := auth_tokens.get("yandex_disk") or get_settings().yandex_disk_token:
             try:
                 self.services["yandex_disk"] = CloudServiceFactory.create_service(
                     "yandex_disk",
@@ -274,8 +275,8 @@ class CloudManager:
 
         # iCloud
         if icloud_creds := auth_tokens.get("icloud") or {
-            "username": os.getenv("ICLOUD_USERNAME"),
-            "password": os.getenv("ICLOUD_PASSWORD", "")
+            "username": get_settings().icloud_username,
+            "password": get_settings().icloud_password
         }:
             if icloud_creds.get("username"):
                 try:

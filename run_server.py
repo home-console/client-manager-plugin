@@ -6,7 +6,7 @@
 import logging
 import uvicorn
 
-from app.main import app
+from client_manager_plugin_app.main import app
 
 # Настройка логирования
 logging.basicConfig(
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 if __name__ == "__main__":
     logger.info("🚀 Запуск модульного сервера...")
     uvicorn.run(
-        "app.main:app",
+        "client_manager_plugin_app.main:app",
         host="0.0.0.0",
         port=10000,
         reload=True,
