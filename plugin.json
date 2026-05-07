@@ -5,5 +5,10 @@
   "description": "Управление удалёнными клиентами через WebSocket и REST API",
   "author": "Home Console",
   "dependencies": [],
+  "provides_events": [
+    "client.*",
+    "command.*",
+    "file.*"
+  ],
   "execution_mode": "in_process"
 }

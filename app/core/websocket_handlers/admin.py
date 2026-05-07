@@ -163,6 +163,32 @@ class AdminHandlers:
                     try:
                         import subprocess
                         import datetime
+                        import os
+                        import re
+
+                        if (os.environ.get("CLIENT_MANAGER_ALLOW_DOCKER_INSTALL") or "").strip() != "1":
+                            _post_callback(
+                                "failed",
+                                "docker install disabled (set CLIENT_MANAGER_ALLOW_DOCKER_INSTALL=1 to enable)",
+                                datetime.datetime.utcnow().isoformat(),
+                            )
+                            return
+
+                        image = str(image).strip()
+                        if not image or len(image) > 256 or any(ch.isspace() for ch in image):
+                            _post_callback(
+                                "failed",
+                                f"invalid docker image ref: {image!r}",
+                                datetime.datetime.utcnow().isoformat(),
+                            )
+                            return
+                        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:-]*", image):
+                            _post_callback(
+                                "failed",
+                                f"invalid docker image ref: {image!r}",
+                                datetime.datetime.utcnow().isoformat(),
+                            )
+                            return
 
                         # docker pull
                         p = subprocess.run(
@@ -178,7 +204,15 @@ class AdminHandlers:
                         # allow options.args to append
                         args = options.get("args") or []
                         if isinstance(args, list):
-                            run_cmd.extend(args)
+                            safe_args: list[str] = []
+                            for a in args[:32]:
+                                if not isinstance(a, str):
+                                    continue
+                                a = a.strip()
+                                if not a or len(a) > 256 or "\n" in a or "\r" in a:
+                                    continue
+                                safe_args.append(a)
+                            run_cmd.extend(safe_args)
                         p2 = subprocess.run(
                             run_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120
                         )
