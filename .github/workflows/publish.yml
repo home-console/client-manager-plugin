@@ -31,16 +31,24 @@ jobs:
 
           if [ "$STATUS" = "404" ]; then
             echo "Creating plugin..."
-            curl -sf -X POST "$MARKETPLACE_URL/api/admin/plugins" \
+            BODY=$(curl -s -w "\nHTTP_%{http_code}" -X POST "$MARKETPLACE_URL/api/admin/plugins" \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"name\":\"$PLUGIN_NAME\",\"display_name\":\"$PLUGIN_NAME\",\"description\":\"$DESCRIPTION\",\"homepage_url\":\"https://github.com/$REPO\"}" \
-              | python3 -c "import sys,json; d=json.load(sys.stdin); print('created:', d.get('name','?'))"
+              -d "{\"name\":\"$PLUGIN_NAME\",\"display_name\":\"$PLUGIN_NAME\",\"description\":\"$DESCRIPTION\",\"homepage_url\":\"https://github.com/$REPO\"}")
+            HTTP_STATUS=$(echo "$BODY" | grep "HTTP_" | tail -1 | cut -d_ -f2)
+            RESPONSE=$(echo "$BODY" | grep -v "HTTP_")
+            echo "create → $HTTP_STATUS: $RESPONSE"
+            if [ "$HTTP_STATUS" != "201" ]; then exit 1; fi
           fi
 
           # Опубликовать релиз из текущего коммита
-          curl -sf -X POST "$MARKETPLACE_URL/api/plugins/$PLUGIN_NAME/releases/from-git" \
+          echo "Publishing release..."
+          BODY=$(curl -s -w "\nHTTP_%{http_code}" -X POST "$MARKETPLACE_URL/api/plugins/$PLUGIN_NAME/releases/from-git" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"ref\":\"$SHA\",\"channel\":\"stable\",\"force_replace\":true,\"source_repo\":\"https://github.com/$REPO\"}" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print('published: v' + d.get('version','?'), '(' + d.get('git_sha','')[:7] + ')')"
+            -d "{\"ref\":\"$SHA\",\"channel\":\"stable\",\"force_replace\":true,\"source_repo\":\"https://github.com/$REPO\"}")
+          HTTP_STATUS=$(echo "$BODY" | grep "HTTP_" | tail -1 | cut -d_ -f2)
+          RESPONSE=$(echo "$BODY" | grep -v "HTTP_")
+          echo "from-git → $HTTP_STATUS: $RESPONSE"
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then exit 1; fi
+          echo "✓ done"
