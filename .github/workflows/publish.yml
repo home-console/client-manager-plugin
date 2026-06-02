@@ -1,0 +1,46 @@
+name: Publish to HomeConsole Marketplace
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish plugin
+        env:
+          MARKETPLACE_URL: ${{ secrets.MARKETPLACE_API_URL }}
+          TOKEN: ${{ secrets.MARKETPLACE_PUBLISHER_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          PLUGIN_NAME=$(python3 -c "import json; print(json.load(open('plugin.json'))['name'])")
+          DESCRIPTION=$(python3 -c "import json; print(json.load(open('plugin.json')).get('description','')[:256])")
+          echo "Plugin: $PLUGIN_NAME  ref: $SHA"
+
+          # Создать плагин если не существует
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            "$MARKETPLACE_URL/api/plugins/$PLUGIN_NAME")
+
+          if [ "$STATUS" = "404" ]; then
+            echo "Creating plugin..."
+            curl -sf -X POST "$MARKETPLACE_URL/api/admin/plugins" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\":\"$PLUGIN_NAME\",\"display_name\":\"$PLUGIN_NAME\",\"description\":\"$DESCRIPTION\",\"homepage_url\":\"https://github.com/$REPO\"}" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print('created:', d.get('name','?'))"
+          fi
+
+          # Опубликовать релиз из текущего коммита
+          curl -sf -X POST "$MARKETPLACE_URL/api/plugins/$PLUGIN_NAME/releases/from-git" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"ref\":\"$SHA\",\"channel\":\"stable\",\"force_replace\":true,\"source_repo\":\"https://github.com/$REPO\"}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print('published: v' + d.get('version','?'), '(' + d.get('git_sha','')[:7] + ')')"
