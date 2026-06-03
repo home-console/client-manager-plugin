@@ -22,6 +22,7 @@ jobs:
 
           PLUGIN_NAME=$(python3 -c "import json; print(json.load(open('plugin.json'))['name'])")
           DESCRIPTION=$(python3 -c "import json; print(json.load(open('plugin.json')).get('description','')[:256])")
+          HOMEPAGE="https://github.com/$REPO"
           echo "Plugin: $PLUGIN_NAME  ref: $SHA"
 
           # Создать плагин если не существует
@@ -34,19 +35,27 @@ jobs:
             BODY=$(curl -s -w "\nHTTP_%{http_code}" -X POST "$MARKETPLACE_URL/api/admin/plugins" \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"name\":\"$PLUGIN_NAME\",\"display_name\":\"$PLUGIN_NAME\",\"description\":\"$DESCRIPTION\",\"homepage_url\":\"https://github.com/$REPO\"}")
+              -d "{\"name\":\"$PLUGIN_NAME\",\"display_name\":\"$PLUGIN_NAME\",\"description\":\"$DESCRIPTION\",\"homepage_url\":\"$HOMEPAGE\"}")
             HTTP_STATUS=$(echo "$BODY" | grep "HTTP_" | tail -1 | cut -d_ -f2)
-            RESPONSE=$(echo "$BODY" | grep -v "HTTP_")
-            echo "create → $HTTP_STATUS: $RESPONSE"
-            if [ "$HTTP_STATUS" != "201" ]; then exit 1; fi
+            echo "create → $HTTP_STATUS"
+            if [ "$HTTP_STATUS" != "201" ]; then
+              echo "$BODY" | grep -v "HTTP_"
+              exit 1
+            fi
           fi
+
+          # Синхронизировать метаданные (homepage_url, description) с текущим репо
+          curl -s -o /dev/null -X PATCH "$MARKETPLACE_URL/api/admin/plugins/$PLUGIN_NAME" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"description\":\"$DESCRIPTION\",\"homepage_url\":\"$HOMEPAGE\"}"
 
           # Опубликовать релиз из текущего коммита
           echo "Publishing release..."
           BODY=$(curl -s -w "\nHTTP_%{http_code}" -X POST "$MARKETPLACE_URL/api/plugins/$PLUGIN_NAME/releases/from-git" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"ref\":\"$SHA\",\"channel\":\"stable\",\"force_replace\":true,\"source_repo\":\"https://github.com/$REPO\"}")
+            -d "{\"ref\":\"$SHA\",\"channel\":\"stable\",\"force_replace\":true,\"source_repo\":\"$HOMEPAGE\"}")
           HTTP_STATUS=$(echo "$BODY" | grep "HTTP_" | tail -1 | cut -d_ -f2)
           RESPONSE=$(echo "$BODY" | grep -v "HTTP_")
           echo "from-git → $HTTP_STATUS: $RESPONSE"
